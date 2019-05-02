@@ -38,7 +38,7 @@ def main(args):
     task = tasks.setup_task(args)
 
     # Load dataset splits
-    load_dataset_splits(args, task)
+    load_dataset_splits(args, task, [args.train_subset, args.valid_subset], epoch=0)
 
     # Build model and criterion
     model = task.build_model(args)
@@ -83,7 +83,7 @@ def main(args):
     )
 
     # Load the latest checkpoint if one is available
-    if not load_checkpoint(args, trainer, epoch_itr):
+    if not load_checkpoint(args, trainer, epoch_itr, max_positions, task):
         trainer.dummy_train_step([dummy_batch])
 
     # Train until the learning rate gets too small
@@ -107,8 +107,33 @@ def main(args):
         # save checkpoint
         if epoch_itr.epoch % args.save_interval == 0:
             save_checkpoint(args, trainer, epoch_itr, valid_losses[0])
+
+        epoch_itr = reload_train(args, epoch_itr, max_positions, task)
     train_meter.stop()
     print('| done training in {:.1f} seconds'.format(train_meter.sum))
+
+
+def reload_train(args, epoch_itr, max_positions, task):
+    # nothing needs to be done when the dataset is not sharded.
+    if len(args.data.split(":")) == 1:
+        return epoch_itr
+    print("| Reloading shard of train data at epoch: ", epoch_itr.epoch)
+    load_dataset_splits(args, task, [args.train_subset], epoch=epoch_itr.epoch)
+    epoch_state_dict = epoch_itr.state_dict()
+    epoch_itr = task.get_batch_iterator(
+        dataset=task.dataset(args.train_subset),
+        max_tokens=args.max_tokens,
+        max_sentences=args.max_sentences,
+        max_positions=max_positions,
+        ignore_invalid_inputs=True,
+        required_batch_size_multiple=args.required_batch_size_multiple,
+        seed=args.seed,
+        num_shards=args.distributed_world_size,
+        shard_id=args.distributed_rank,
+        num_workers=args.num_workers,
+    )
+    epoch_itr.load_state_dict(epoch_state_dict)
+    return epoch_itr
 
 
 def train(args, trainer, task, epoch_itr):
@@ -336,7 +361,7 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
                 os.remove(old_chk)
 
 
-def load_checkpoint(args, trainer, epoch_itr):
+def load_checkpoint(args, trainer, epoch_itr, max_positions, task):
     """Load a checkpoint and replay dataloader to match."""
 
     # Only rank 0 should attempt to create the required dir
@@ -352,7 +377,14 @@ def load_checkpoint(args, trainer, epoch_itr):
                                               eval(args.optimizer_overrides))
         if extra_state is not None:
             # replay train iterator to match checkpoint
-            epoch_itr.load_state_dict(extra_state['train_iterator'])
+            epoch_itr_state = extra_state['train_iterator']
+
+            # If the loaded checkpoint is not at epoch 0, reload train dataset,
+            # as it could be potentially sharded.
+            if epoch_itr_state['epoch'] != 0:
+                epoch_itr = reload_train(args, epoch_itr, max_positions, task)
+
+            epoch_itr.load_state_dict(epoch_itr_state)
 
             print('| loaded checkpoint {} (epoch {} @ {} updates)'.format(
                 checkpoint_path, epoch_itr.epoch, trainer.get_num_updates()))
@@ -367,17 +399,20 @@ def load_checkpoint(args, trainer, epoch_itr):
     return False
 
 
-def load_dataset_splits(args, task):
-    task.load_dataset(args.train_subset, combine=True)
-    for split in args.valid_subset.split(','):
-        for k in itertools.count():
-            split_k = split + (str(k) if k > 0 else '')
-            try:
-                task.load_dataset(split_k, combine=False)
-            except FileNotFoundError as e:
-                if k > 0:
-                    break
-                raise e
+def load_dataset_splits(args, task, dataset_splits, epoch):
+    for dataset_split in dataset_splits:
+        if dataset_split == args.train_subset:
+            task.load_dataset(args.train_subset, combine=True, epoch=epoch)
+        else:
+            for valid_sub_split in args.valid_subset.split(','):
+                for k in itertools.count():
+                    split_k = valid_sub_split + (str(k) if k > 0 else '')
+                    try:
+                        task.load_dataset(split_k, combine=True, epoch=epoch)
+                    except FileNotFoundError as e:
+                        if k > 0:
+                            break
+                        raise e
 
 
 def distributed_main(i, args):
