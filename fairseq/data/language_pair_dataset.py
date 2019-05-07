@@ -53,6 +53,7 @@ def collate(
     else:
         ntokens = sum(len(s['source']) for s in samples)
 
+    # TODO will have to add feature here too
     batch = {
         'id': id,
         'nsentences': len(samples),
@@ -141,6 +142,7 @@ class LanguagePairDataset(FairseqDataset):
             if self.src[index][-1] == eos:
                 src_item = self.src[index][:-1]
 
+        # TODO add feature here
         return {
             'id': index,
             'source': src_item,

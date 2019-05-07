@@ -68,6 +68,7 @@ class TranslationTask(FairseqTask):
         parser.add_argument('--upsample-primary', default=1, type=int,
                             help='amount to upsample primary dataset')
         # fmt: on
+        # TODO probably need to add an argument for BERT
 
     def __init__(self, args, src_dict, tgt_dict):
         super().__init__(args)
@@ -167,6 +168,7 @@ class TranslationTask(FairseqTask):
             src_dataset = ConcatDataset(src_datasets, sample_ratios)
             tgt_dataset = ConcatDataset(tgt_datasets, sample_ratios)
 
+        # TODO input feature here
         self.datasets[split] = LanguagePairDataset(
             src_dataset, src_dataset.sizes, self.src_dict,
             tgt_dataset, tgt_dataset.sizes, self.tgt_dict,
