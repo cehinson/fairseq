@@ -12,6 +12,8 @@ from fairseq import utils
 
 from . import data_utils, FairseqDataset
 
+from ..modules import BertFeatEmbed
+
 
 def collate(
     samples, pad_idx, eos_idx, left_pad_source=True, left_pad_target=False,
@@ -53,7 +55,11 @@ def collate(
     else:
         ntokens = sum(len(s['source']) for s in samples)
 
-    # TODO will have to add feature here too
+    bert_src = [s['bert_src'] for s in samples]
+    bert_tgt = [s['bert_tgt'] for s in samples]
+    bert_src = torch.stack(bert_src)
+    bert_tgt = torch.stack(bert_tgt)
+
     batch = {
         'id': id,
         'nsentences': len(samples),
@@ -61,6 +67,8 @@ def collate(
         'net_input': {
             'src_tokens': src_tokens,
             'src_lengths': src_lengths,
+            'bert_src': bert_src,
+            'bert_tgt': bert_tgt
         },
         'target': target,
     }
@@ -105,6 +113,7 @@ class LanguagePairDataset(FairseqDataset):
         left_pad_source=True, left_pad_target=False,
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True, remove_eos_from_source=False, append_eos_to_target=False,
+        use_bert=False
     ):
         if tgt_dict is not None:
             assert src_dict.pad() == tgt_dict.pad()
@@ -124,6 +133,8 @@ class LanguagePairDataset(FairseqDataset):
         self.input_feeding = input_feeding
         self.remove_eos_from_source = remove_eos_from_source
         self.append_eos_to_target = append_eos_to_target
+        if use_bert:
+            self.feat_embedder = BertFeatEmbed()
 
     def __getitem__(self, index):
         tgt_item = self.tgt[index] if self.tgt is not None else None
@@ -135,18 +146,41 @@ class LanguagePairDataset(FairseqDataset):
         if self.append_eos_to_target:
             eos = self.tgt_dict.eos() if self.tgt_dict else self.src_dict.eos()
             if self.tgt and self.tgt[index][-1] != eos:
-                tgt_item = torch.cat([self.tgt[index], torch.LongTensor([eos])])
+                tgt_item = torch.cat(
+                    [self.tgt[index], torch.LongTensor([eos])])
 
         if self.remove_eos_from_source:
             eos = self.src_dict.eos()
             if self.src[index][-1] == eos:
                 src_item = self.src[index][:-1]
 
-        # TODO add feature here
+        src_tokens = [self.src_dict[tok] for tok in src_item]
+        tgt_tokens = [self.tgt_dict[tok] for tok in tgt_item]
+        # remove EOS
+        eos = self.tgt_dict[self.tgt_dict.eos()] if self.tgt_dict \
+            else self.src_dict[self.src_dict.eos()]
+        if src_tokens[-1] == eos:
+            src_tokens = src_tokens[:len(src_tokens)-1]
+        if tgt_tokens[-1] == eos:
+            tgt_tokens = tgt_tokens[:len(tgt_tokens)-1]
+
+        # remove PAD
+        pad = self.tgt_dict[self.tgt_dict.pad()] if self.tgt_dict \
+            else self.src_dict[self.src_dict.pad()]
+        if pad in src_tokens:
+            raise RuntimeError
+        if pad in tgt_tokens:
+            raise RuntimeError
+
+        bert_src = self.feat_embedder(src_tokens)
+        bert_tgt = self.feat_embedder(tgt_tokens)
+
         return {
             'id': index,
             'source': src_item,
             'target': tgt_item,
+            'bert_src': bert_src,
+            'bert_tgt': bert_tgt,
         }
 
     def __len__(self):
@@ -205,7 +239,8 @@ class LanguagePairDataset(FairseqDataset):
         else:
             indices = np.arange(len(self))
         if self.tgt_sizes is not None:
-            indices = indices[np.argsort(self.tgt_sizes[indices], kind='mergesort')]
+            indices = indices[np.argsort(
+                self.tgt_sizes[indices], kind='mergesort')]
         return indices[np.argsort(self.src_sizes[indices], kind='mergesort')]
 
     @property
