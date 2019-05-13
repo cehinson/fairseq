@@ -9,6 +9,7 @@ from .adaptive_input import AdaptiveInput
 from .adaptive_softmax import AdaptiveSoftmax
 from .beamable_mm import BeamableMM
 from .bert_layer_norm import BertLayerNorm
+from .bert_feat_embed import BertFeatEmbed
 from .character_token_embedder import CharacterTokenEmbedder
 from .conv_tbc import ConvTBC
 from .downsampled_multihead_attention import DownsampledMultiHeadAttention
@@ -35,6 +36,7 @@ __all__ = [
     'AdaptiveSoftmax',
     'BeamableMM',
     'BertLayerNorm',
+    'BertFeatEmbed'  # TODO verify this is correct...
     'CharacterTokenEmbedder',
     'ConvTBC',
     'DownsampledMultiHeadAttention',
