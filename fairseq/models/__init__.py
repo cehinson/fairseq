@@ -9,17 +9,18 @@ import argparse
 import importlib
 import os
 
-from .extra_feat_encoder import ExtraFeatEncoder
-from .extra_feat_decoder import ExtraFeatDecoder
 from .fairseq_decoder import FairseqDecoder  # noqa: F401
 from .fairseq_encoder import FairseqEncoder  # noqa: F401
+from .extra_feat_encoder import ExtraFeatEncoder
 from .fairseq_incremental_decoder import FairseqIncrementalDecoder  # noqa: F401
+from .extra_feat_decoder import ExtraFeatDecoder
 from .fairseq_model import (
     BaseFairseqModel,
     FairseqModel,  # noqa: F401
     FairseqMultiModel,  # noqa: F401
     FairseqLanguageModel,  # noqa: F401
     FairseqEncoderModel,  # noqa: F401
+    ExtraFeatModel
 )
 
 from .composite_encoder import CompositeEncoder  # noqa: F401
