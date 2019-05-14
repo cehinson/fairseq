@@ -200,11 +200,8 @@ class ExtraFeatModel(FairseqModel):
 
     def forward(self, src_tokens, src_lengths, prev_output_tokens,
                 bert_src, bert_tgt):
-        breakpoint()
         encoder_out = self.encoder(src_tokens, src_lengths, bert_src)
-        # FIXME need to make sure no bert_src works
         decoder_out = self.decoder(prev_output_tokens, encoder_out, bert_tgt)
-        # FIXME need to make sure no bert_tgt works
 
         return decoder_out
 
