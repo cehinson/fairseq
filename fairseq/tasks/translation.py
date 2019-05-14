@@ -17,6 +17,7 @@ from fairseq.data import (
     IndexedDataset,
     IndexedRawTextDataset,
     LanguagePairDataset,
+    LangPairBertFeatDataset
 )
 
 from . import FairseqTask, register_task
@@ -183,16 +184,24 @@ class TranslationTask(FairseqTask):
             src_dataset = ConcatDataset(src_datasets, sample_ratios)
             tgt_dataset = ConcatDataset(tgt_datasets, sample_ratios)
 
-        # TODO input feature here
-        self.datasets[split] = LanguagePairDataset(
-            src_dataset, src_dataset.sizes, self.src_dict,
-            tgt_dataset, tgt_dataset.sizes, self.tgt_dict,
-            left_pad_source=self.args.left_pad_source,
-            left_pad_target=self.args.left_pad_target,
-            max_source_positions=self.args.max_source_positions,
-            max_target_positions=self.args.max_target_positions,
-            use_bert=self.args.use_bert
-        )
+        if self.args.use_bert:
+            self.datasets[split] = LangPairBertFeatDataset(
+                src_dataset, src_dataset.sizes, self.src_dict,
+                tgt_dataset, tgt_dataset.sizes, self.tgt_dict,
+                left_pad_source=self.args.left_pad_source,
+                left_pad_target=self.args.left_pad_target,
+                max_source_positions=self.args.max_source_positions,
+                max_target_positions=self.args.max_target_positions,
+            )
+        else:
+            self.datasets[split] = LanguagePairDataset(
+                src_dataset, src_dataset.sizes, self.src_dict,
+                tgt_dataset, tgt_dataset.sizes, self.tgt_dict,
+                left_pad_source=self.args.left_pad_source,
+                left_pad_target=self.args.left_pad_target,
+                max_source_positions=self.args.max_source_positions,
+                max_target_positions=self.args.max_target_positions,
+            )
 
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         return LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary)
