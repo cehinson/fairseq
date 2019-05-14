@@ -193,7 +193,7 @@ class ExtraFeatModel(FairseqModel):
     """
 
     def __init__(self, encoder, decoder):
-        super().__init__(self, encoder, decoder)
+        super().__init__(encoder, decoder)
 
         assert isinstance(self.encoder, ExtraFeatEncoder)
         assert isinstance(self.decoder, ExtraFeatDecoder)
