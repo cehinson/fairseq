@@ -52,7 +52,6 @@ def collate(
     bert_tgt = [s['bert_tgt'] for s in samples]
     bert_src = torch.stack(bert_src)
     bert_tgt = torch.stack(bert_tgt)
-    breakpoint()
     batch = {
         'id': id,
         'nsentences': len(samples),
