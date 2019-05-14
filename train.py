@@ -55,7 +55,6 @@ def main(args, init_distributed=False):
         sum(p.numel() for p in model.parameters()),
         sum(p.numel() for p in model.parameters() if p.requires_grad),
     ))
-
     # Build trainer
     trainer = Trainer(args, task, model, criterion)
     print('| training on {} GPUs'.format(args.distributed_world_size))
@@ -129,6 +128,7 @@ def train(args, trainer, task, epoch_itr):
     valid_subsets = args.valid_subset.split(',')
     max_update = args.max_update or math.inf
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
+        breakpoint()
         log_output = trainer.train_step(samples)
         if log_output is None:
             continue
