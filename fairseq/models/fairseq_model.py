@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import FairseqDecoder, FairseqEncoder
+from . import ExtraFeatEncoder, ExtraFeatDecoder
 from fairseq.data import Dictionary
 
 
@@ -29,7 +30,8 @@ class BaseFairseqModel(nn.Module):
     @classmethod
     def build_model(cls, args, task):
         """Build a new model instance."""
-        raise NotImplementedError('FairseqModels must implement the build_model method')
+        raise NotImplementedError(
+            'FairseqModels must implement the build_model method')
 
     def get_targets(self, sample, net_output):
         """Get targets from either the sample or the net's output."""
@@ -177,6 +179,7 @@ class FairseqModel(BaseFairseqModel):
         """
         encoder_out = self.encoder(src_tokens, src_lengths)
         decoder_out = self.decoder(prev_output_tokens, encoder_out)
+
         return decoder_out
 
     def max_positions(self):
@@ -184,8 +187,31 @@ class FairseqModel(BaseFairseqModel):
         return (self.encoder.max_positions(), self.decoder.max_positions())
 
 
+class ExtraFeatModel(FairseqModel):
+    """
+    Base class for encoder-decoder models with extra input features
+    """
+
+    def __init__(self, encoder, decoder):
+        super().__init__(self, encoder, decoder)
+
+        assert isinstance(self.encoder, ExtraFeatEncoder)
+        assert isinstance(self.decoder, ExtraFeatDecoder)
+
+    def forward(self, src_tokens, src_lengths, prev_output_tokens,
+                bert_src, bert_tgt):
+        breakpoint()
+        encoder_out = self.encoder(src_tokens, src_lengths, bert_src)
+        # FIXME need to make sure no bert_src works
+        decoder_out = self.decoder(prev_output_tokens, encoder_out, bert_tgt)
+        # FIXME need to make sure no bert_tgt works
+
+        return decoder_out
+
+
 class FairseqMultiModel(BaseFairseqModel):
     """Base class for combining multiple encoder-decoder models."""
+
     def __init__(self, encoders, decoders):
         super().__init__()
         assert encoders.keys() == decoders.keys()
@@ -235,13 +261,15 @@ class FairseqMultiModel(BaseFairseqModel):
         decoder_outs = {}
         for key in self.keys:
             encoder_out = self.models[key].encoder(src_tokens, src_lengths)
-            decoder_outs[key] = self.models[key].decoder(prev_output_tokens, encoder_out)
+            decoder_outs[key] = self.models[key].decoder(
+                prev_output_tokens, encoder_out)
         return decoder_outs
 
     def max_positions(self):
         """Maximum length supported by the model."""
         return {
-            key: (self.models[key].encoder.max_positions(), self.models[key].decoder.max_positions())
+            key: (self.models[key].encoder.max_positions(),
+                  self.models[key].decoder.max_positions())
             for key in self.keys
         }
 
