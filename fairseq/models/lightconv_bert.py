@@ -308,6 +308,9 @@ class LightConvBertEncoder(ExtraFeatEncoder):
             learned=args.encoder_learned_pos,
         ) if not args.no_token_positional_embeddings else None
 
+        self.bert_layer_proj = Linear(4, 1)
+        self.bert_hidden_proj = Linear(768, embed_dim)
+
         self.layers = nn.ModuleList([])
         self.layers.extend([
             LightConvEncoderLayer(args, kernel_size=args.encoder_kernel_size_list[i])
@@ -318,7 +321,7 @@ class LightConvBertEncoder(ExtraFeatEncoder):
         if self.normalize:
             self.layer_norm = LayerNorm(embed_dim)
 
-    def forward(self, src_tokens, src_lengths):
+    def forward(self, src_tokens, src_lengths, bert_src):
         """
         Args:
             src_tokens (LongTensor): tokens in the source language of shape
@@ -338,6 +341,12 @@ class LightConvBertEncoder(ExtraFeatEncoder):
         if self.embed_positions is not None:
             x += self.embed_positions(src_tokens)
         x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # map the bert features to same size as embedding
+        bert_feat = self.bert_hidden_proj(bert_src)
+        # sum the features
+        breakpoint()
+        bert_feat = self.bert_layer_proj(bert_feat.tranpose(2, 3)).unsqueeze(-1)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -413,6 +422,9 @@ class LightConvBertDecoder(ExtraFeatDecoder):
         self.embed_tokens = embed_tokens
         self.embed_scale = math.sqrt(embed_dim)  # todo: try with input_embed_dim
 
+        self.bert_layer_proj = Linear(4, 1)
+        self.bert_hidden_proj = Linear(768, embed_dim)
+
         self.project_in_dim = Linear(input_embed_dim, embed_dim, bias=False) if embed_dim != input_embed_dim else None
 
         self.embed_positions = PositionalEmbedding(
@@ -449,7 +461,7 @@ class LightConvBertDecoder(ExtraFeatDecoder):
         if self.normalize:
             self.layer_norm = LayerNorm(embed_dim)
 
-    def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None):
+    def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None, bert_tgt=None):
         """
         Args:
             prev_output_tokens (LongTensor): previous decoder outputs of shape
@@ -466,6 +478,7 @@ class LightConvBertDecoder(ExtraFeatDecoder):
                 - the last decoder layer's attention weights of shape `(batch,
                   tgt_len, src_len)`
         """
+        breakpoint()
         # embed positions
         positions = self.embed_positions(
             prev_output_tokens,
