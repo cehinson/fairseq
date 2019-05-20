@@ -116,7 +116,8 @@ class LightConvBertModel(ExtraFeatModel):
         parser.add_argument('--decoder-conv-type', default='dynamic', type=str,
                             choices=['dynamic', 'lightweight'],
                             help='type of convolution')
-        parser.add_argument('--weight-softmax', default=True, type=options.eval_bool)
+        parser.add_argument('--weight-softmax',
+                            default=True, type=options.eval_bool)
         parser.add_argument('--weight-dropout', type=float, metavar='D',
                             help='dropout probability for conv weights')
 
@@ -146,13 +147,15 @@ class LightConvBertModel(ExtraFeatModel):
 
         if args.share_all_embeddings:
             if src_dict != tgt_dict:
-                raise RuntimeError('--share-all-embeddings requires a joined dictionary')
+                raise RuntimeError(
+                    '--share-all-embeddings requires a joined dictionary')
             if args.encoder_embed_dim != args.decoder_embed_dim:
                 raise RuntimeError(
                     '--share-all-embeddings requires --encoder-embed-dim to match --decoder-embed-dim')
             if args.decoder_embed_path and (
                     args.decoder_embed_path != args.encoder_embed_path):
-                raise RuntimeError('--share-all-embeddings not compatible with --decoder-embed-path')
+                raise RuntimeError(
+                    '--share-all-embeddings not compatible with --decoder-embed-path')
             encoder_embed_tokens = build_embedding(
                 src_dict, args.encoder_embed_dim, args.encoder_embed_path
             )
@@ -242,7 +245,8 @@ class LightConvBertLanguageModel(FairseqLanguageModel):
         parser.add_argument('--decoder-conv-type', default='dynamic', type=str,
                             choices=['dynamic', 'lightweight'],
                             help='type of convolution')
-        parser.add_argument('--weight-softmax', default=True, type=options.eval_bool)
+        parser.add_argument('--weight-softmax',
+                            default=True, type=options.eval_bool)
         parser.add_argument('--weight-dropout', type=float, metavar='D',
                             help='dropout probability for conv weights')
 
@@ -269,7 +273,8 @@ class LightConvBertLanguageModel(FairseqLanguageModel):
                                          args.adaptive_input_factor, args.decoder_embed_dim,
                                          options.eval_str_list(args.adaptive_input_cutoff, type=int))
         else:
-            embed_tokens = Embedding(len(task.dictionary), args.decoder_input_dim, task.dictionary.pad())
+            embed_tokens = Embedding(
+                len(task.dictionary), args.decoder_input_dim, task.dictionary.pad())
 
         if args.tie_adaptive_weights:
             assert args.adaptive_input
@@ -278,7 +283,8 @@ class LightConvBertLanguageModel(FairseqLanguageModel):
                 args.adaptive_softmax_cutoff, args.adaptive_input_cutoff)
             assert args.decoder_input_dim == args.decoder_output_dim
 
-        decoder = LightConvBertDecoder(args, task.output_dictionary, embed_tokens, no_encoder_attn=True, final_norm=False)
+        decoder = LightConvBertDecoder(
+            args, task.output_dictionary, embed_tokens, no_encoder_attn=True, final_norm=False)
         return LightConvBertLanguageModel(decoder)
 
 
@@ -308,12 +314,17 @@ class LightConvBertEncoder(ExtraFeatEncoder):
             learned=args.encoder_learned_pos,
         ) if not args.no_token_positional_embeddings else None
 
-        self.bert_layer_proj = Linear(4, 1)
+        # project the bert hidden layers to the same dimension
+        # as the token/position embeddings
         self.bert_hidden_proj = Linear(768, embed_dim)
+        # learn task specific weights for summing
+        # bert feature embeddings
+        self.bert_feat_weights = nn.Parameter(torch.randn(4))
 
         self.layers = nn.ModuleList([])
         self.layers.extend([
-            LightConvEncoderLayer(args, kernel_size=args.encoder_kernel_size_list[i])
+            LightConvEncoderLayer(
+                args, kernel_size=args.encoder_kernel_size_list[i])
             for i in range(args.encoder_layers)
         ])
         self.register_buffer('version', torch.Tensor([2]))
@@ -340,13 +351,25 @@ class LightConvBertEncoder(ExtraFeatEncoder):
         x = self.embed_scale * self.embed_tokens(src_tokens)
         if self.embed_positions is not None:
             x += self.embed_positions(src_tokens)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        # x = F.dropout(x, p=self.dropout, training=self.training)
 
         # map the bert features to same size as embedding
         bert_feat = self.bert_hidden_proj(bert_src)
-        # sum the features
-        breakpoint()
-        bert_feat = self.bert_layer_proj(bert_feat.tranpose(2, 3)).unsqueeze(-1)
+        bert_feat = bert_feat.transpose(2, 3)
+        # weighted sum of the features
+        bert_final = torch.sum(bert_feat * self.bert_feat_weights.softmax(0), 3)
+        # at this point, x should be one token longer than bert_final
+        # this is because of the <bos> tag
+        assert((x.size(1) - 1) == bert_final.size(1))
+        # deal with this by duplicating the normal <bos> embedding
+        tag_tensor = x[:, 0, :].clone()
+        tag_tensor = tag_tensor.unsqueeze(1)
+        # cat to the beginning
+        bert_final = torch.cat((tag_tensor, bert_final), dim=1)
+        # concat the embeddings
+        x = torch.cat((x, bert_final), dim=2)
+        # move dropout to here...
+        x = F.dropout(x, p=self.dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -420,12 +443,18 @@ class LightConvBertDecoder(ExtraFeatDecoder):
         self.max_target_positions = args.max_target_positions
 
         self.embed_tokens = embed_tokens
-        self.embed_scale = math.sqrt(embed_dim)  # todo: try with input_embed_dim
+        # todo: try with input_embed_dim
+        self.embed_scale = math.sqrt(embed_dim)
 
-        self.bert_layer_proj = Linear(4, 1)
+        # project the bert hidden layers to the same dimension
+        # as the token/position embeddings
         self.bert_hidden_proj = Linear(768, embed_dim)
+        # learn task specific weights for summing
+        # bert feature embeddings
+        self.bert_feat_weights = nn.Parameter(torch.randn(4))
 
-        self.project_in_dim = Linear(input_embed_dim, embed_dim, bias=False) if embed_dim != input_embed_dim else None
+        self.project_in_dim = Linear(
+            input_embed_dim, embed_dim, bias=False) if embed_dim != input_embed_dim else None
 
         self.embed_positions = PositionalEmbedding(
             args.max_target_positions, embed_dim, padding_idx,
@@ -434,7 +463,8 @@ class LightConvBertDecoder(ExtraFeatDecoder):
 
         self.layers = nn.ModuleList([])
         self.layers.extend([
-            LightConvDecoderLayer(args, no_encoder_attn, kernel_size=args.decoder_kernel_size_list[i])
+            LightConvDecoderLayer(args, no_encoder_attn,
+                                  kernel_size=args.decoder_kernel_size_list[i])
             for i in range(args.decoder_layers)
         ])
 
@@ -454,14 +484,16 @@ class LightConvBertDecoder(ExtraFeatDecoder):
                 tie_proj=args.tie_adaptive_proj,
             )
         elif not self.share_input_output_embed:
-            self.embed_out = nn.Parameter(torch.Tensor(len(dictionary), output_embed_dim))
-            nn.init.normal_(self.embed_out, mean=0, std=output_embed_dim ** -0.5)
+            self.embed_out = nn.Parameter(
+                torch.Tensor(len(dictionary), output_embed_dim*2))
+            nn.init.normal_(self.embed_out, mean=0,
+                            std=(output_embed_dim*2) ** -0.5)
         self.register_buffer('version', torch.Tensor([2]))
         self.normalize = args.decoder_normalize_before and final_norm
         if self.normalize:
             self.layer_norm = LayerNorm(embed_dim)
 
-    def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None, bert_tgt=None):
+    def forward(self, prev_output_tokens, encoder_out, bert_tgt, incremental_state=None):
         """
         Args:
             prev_output_tokens (LongTensor): previous decoder outputs of shape
@@ -478,7 +510,6 @@ class LightConvBertDecoder(ExtraFeatDecoder):
                 - the last decoder layer's attention weights of shape `(batch,
                   tgt_len, src_len)`
         """
-        breakpoint()
         # embed positions
         positions = self.embed_positions(
             prev_output_tokens,
@@ -498,6 +529,24 @@ class LightConvBertDecoder(ExtraFeatDecoder):
 
         if positions is not None:
             x += positions
+        # x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # map the bert features to same size as embedding
+        bert_feat = self.bert_hidden_proj(bert_tgt)
+        bert_feat = bert_feat.transpose(2, 3)
+        # weighted sum of the features
+        bert_final = torch.sum(bert_feat * self.bert_feat_weights.softmax(0), 3)
+        # at this point, x should be one token longer than bert_final
+        # this is because of the <eos> tag
+        assert((x.size(1) - 1) == bert_final.size(1))
+        # deal with this by duplicating the normal <eos> embedding
+        tag_tensor = x[:, 0, :].clone()
+        tag_tensor = tag_tensor.unsqueeze(1)
+        # cat to the end
+        bert_final = torch.cat((bert_final, tag_tensor), dim=1)
+        # concat the embeddings
+        x = torch.cat((x, bert_final), dim=2)
+        # move dropout to here...
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # B x T x C -> T x B x C
@@ -543,9 +592,11 @@ class LightConvBertDecoder(ExtraFeatDecoder):
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
         if not hasattr(self, '_future_mask') or self._future_mask is None or self._future_mask.device != tensor.device:
-            self._future_mask = torch.triu(utils.fill_with_neg_inf(tensor.new(dim, dim)), 1)
+            self._future_mask = torch.triu(
+                utils.fill_with_neg_inf(tensor.new(dim, dim)), 1)
         if self._future_mask.size(0) < dim:
-            self._future_mask = torch.triu(utils.fill_with_neg_inf(self._future_mask.resize_(dim, dim)), 1)
+            self._future_mask = torch.triu(utils.fill_with_neg_inf(
+                self._future_mask.resize_(dim, dim)), 1)
         return self._future_mask[:dim, :dim]
 
 
@@ -560,14 +611,15 @@ class LightConvEncoderLayer(nn.Module):
     def __init__(self, args, kernel_size=0):
         super().__init__()
         self.embed_dim = args.encoder_embed_dim
-        self.conv_dim = args.encoder_conv_dim
-        padding_l = kernel_size // 2 if kernel_size % 2 == 1 else ((kernel_size - 1) // 2, kernel_size // 2)
+        self.conv_dim = args.encoder_conv_dim * 2
+        padding_l = kernel_size // 2 if kernel_size % 2 == 1 else (
+            (kernel_size - 1) // 2, kernel_size // 2)
 
         if args.encoder_glu:
-            self.linear1 = Linear(self.embed_dim, 2*self.conv_dim)
+            self.linear1 = Linear(self.embed_dim*2, 2*self.conv_dim)
             self.act = nn.GLU()
         else:
-            self.linear1 = Linear(self.embed_dim, self.conv_dim)
+            self.linear1 = Linear(self.embed_dim*2, self.conv_dim)
             self.act = None
         if args.encoder_conv_type == 'lightweight':
             self.conv = LightweightConv1dTBC(self.conv_dim, kernel_size, padding_l=padding_l,
@@ -581,15 +633,16 @@ class LightConvEncoderLayer(nn.Module):
                                          weight_dropout=args.weight_dropout)
         else:
             raise NotImplementedError
-        self.linear2 = Linear(self.conv_dim, self.embed_dim)
+        self.linear2 = Linear(self.conv_dim, self.embed_dim*2)
 
         self.dropout = args.dropout
         self.relu_dropout = args.relu_dropout
         self.input_dropout = args.input_dropout
         self.normalize_before = args.encoder_normalize_before
-        self.fc1 = Linear(self.embed_dim, args.encoder_ffn_embed_dim)
-        self.fc2 = Linear(args.encoder_ffn_embed_dim, self.embed_dim)
-        self.layer_norms = nn.ModuleList([LayerNorm(self.embed_dim) for _ in range(2)])
+        self.fc1 = Linear(self.embed_dim*2, args.encoder_ffn_embed_dim)
+        self.fc2 = Linear(args.encoder_ffn_embed_dim, self.embed_dim*2)
+        self.layer_norms = nn.ModuleList(
+            [LayerNorm(self.embed_dim*2) for _ in range(2)])
 
     def forward(self, x, encoder_padding_mask):
         """
@@ -608,7 +661,8 @@ class LightConvEncoderLayer(nn.Module):
         if self.act is not None:
             x = self.act(x)
         if encoder_padding_mask is not None:
-            x = x.masked_fill(encoder_padding_mask.transpose(0, 1).unsqueeze(2), 0)
+            x = x.masked_fill(
+                encoder_padding_mask.transpose(0, 1).unsqueeze(2), 0)
         x = self.conv(x)
         x = self.linear2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -650,12 +704,12 @@ class LightConvDecoderLayer(nn.Module):
     def __init__(self, args, no_encoder_attn=False, kernel_size=0):
         super().__init__()
         self.embed_dim = args.decoder_embed_dim
-        self.conv_dim = args.decoder_conv_dim
+        self.conv_dim = args.decoder_conv_dim * 2
         if args.decoder_glu:
-            self.linear1 = Linear(self.embed_dim, 2*self.conv_dim)
+            self.linear1 = Linear(self.embed_dim*2, 2*self.conv_dim)
             self.act = nn.GLU()
         else:
-            self.linear1 = Linear(self.embed_dim, self.conv_dim)
+            self.linear1 = Linear(self.embed_dim*2, self.conv_dim)
             self.act = None
         if args.decoder_conv_type == 'lightweight':
             self.conv = LightweightConv1dTBC(self.conv_dim, kernel_size, padding_l=kernel_size-1,
@@ -669,29 +723,29 @@ class LightConvDecoderLayer(nn.Module):
                                          weight_dropout=args.weight_dropout)
         else:
             raise NotImplementedError
-        self.linear2 = Linear(self.conv_dim, self.embed_dim)
+        self.linear2 = Linear(self.conv_dim, self.embed_dim*2)
 
         self.dropout = args.dropout
         self.relu_dropout = args.relu_dropout
         self.input_dropout = args.input_dropout
         self.normalize_before = args.decoder_normalize_before
 
-        self.conv_layer_norm = LayerNorm(self.embed_dim)
+        self.conv_layer_norm = LayerNorm(self.embed_dim*2)
 
         if no_encoder_attn:
             self.encoder_attn = None
             self.encoder_attn_layer_norm = None
         else:
             self.encoder_attn = MultiheadAttention(
-                self.embed_dim, args.decoder_attention_heads,
+                self.embed_dim*2, args.decoder_attention_heads,
                 dropout=args.attention_dropout,
             )
-            self.encoder_attn_layer_norm = LayerNorm(self.embed_dim)
+            self.encoder_attn_layer_norm = LayerNorm(self.embed_dim*2)
 
-        self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
-        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+        self.fc1 = Linear(self.embed_dim*2, args.decoder_ffn_embed_dim)
+        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim*2)
 
-        self.final_layer_norm = LayerNorm(self.embed_dim)
+        self.final_layer_norm = LayerNorm(self.embed_dim*2)
         self.need_attn = True
 
     def forward(self, x, encoder_out, encoder_padding_mask, incremental_state,
@@ -725,13 +779,15 @@ class LightConvDecoderLayer(nn.Module):
         attn = None
         if self.encoder_attn is not None:
             residual = x
-            x = self.maybe_layer_norm(self.encoder_attn_layer_norm, x, before=True)
+            x = self.maybe_layer_norm(
+                self.encoder_attn_layer_norm, x, before=True)
             if prev_attn_state is not None:
                 if incremental_state is None:
                     incremental_state = {}
                 prev_key, prev_value = prev_attn_state
                 saved_state = {"prev_key": prev_key, "prev_value": prev_value}
-                self.encoder_attn._set_input_buffer(incremental_state, saved_state)
+                self.encoder_attn._set_input_buffer(
+                    incremental_state, saved_state)
             x, attn = self.encoder_attn(
                 query=x,
                 key=encoder_out,
@@ -743,7 +799,8 @@ class LightConvDecoderLayer(nn.Module):
             )
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
-            x = self.maybe_layer_norm(self.encoder_attn_layer_norm, x, after=True)
+            x = self.maybe_layer_norm(
+                self.encoder_attn_layer_norm, x, after=True)
 
         residual = x
         x = self.maybe_layer_norm(self.final_layer_norm, x, before=True)
@@ -806,15 +863,19 @@ def base_lm_architecture(args):
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 2048)
     args.decoder_layers = getattr(args, 'decoder_layers', 6)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 8)
-    args.adaptive_softmax_cutoff = getattr(args, 'adaptive_softmax_cutoff', None)
-    args.adaptive_softmax_dropout = getattr(args, 'adaptive_softmax_dropout', 0)
+    args.adaptive_softmax_cutoff = getattr(
+        args, 'adaptive_softmax_cutoff', None)
+    args.adaptive_softmax_dropout = getattr(
+        args, 'adaptive_softmax_dropout', 0)
     args.adaptive_softmax_factor = getattr(args, 'adaptive_softmax_factor', 4)
     args.decoder_learned_pos = getattr(args, 'decoder_learned_pos', False)
 
     args.character_embeddings = getattr(args, 'character_embeddings', False)
 
-    args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_embed_dim)
-    args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
+    args.decoder_output_dim = getattr(
+        args, 'decoder_output_dim', args.decoder_embed_dim)
+    args.decoder_input_dim = getattr(
+        args, 'decoder_input_dim', args.decoder_embed_dim)
 
     # The model training is not stable without this
     args.decoder_normalize_before = True
@@ -826,7 +887,8 @@ def base_lm_architecture(args):
     args.tie_adaptive_weights = getattr(args, 'tie_adaptive_weights', False)
     args.tie_adaptive_proj = getattr(args, 'tie_adaptive_proj', False)
 
-    args.decoder_kernel_size_list = getattr(args, 'decoder_kernel_size_list', [3, 7, 15, 31, 31, 31])
+    args.decoder_kernel_size_list = getattr(
+        args, 'decoder_kernel_size_list', [3, 7, 15, 31, 31, 31])
     if len(args.decoder_kernel_size_list) == 1:
         args.decoder_kernel_size_list = args.decoder_kernel_size_list * args.decoder_layers
 
@@ -848,42 +910,59 @@ def base_architecture(args):
     args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 2048)
     args.encoder_layers = getattr(args, 'encoder_layers', 7)
     args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 8)
-    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', False)
+    args.encoder_normalize_before = getattr(
+        args, 'encoder_normalize_before', False)
     args.encoder_learned_pos = getattr(args, 'encoder_learned_pos', False)
     args.decoder_embed_path = getattr(args, 'decoder_embed_path', None)
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', args.encoder_embed_dim)
-    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', args.encoder_ffn_embed_dim)
+    args.decoder_embed_dim = getattr(
+        args, 'decoder_embed_dim', args.encoder_embed_dim)
+    args.decoder_ffn_embed_dim = getattr(
+        args, 'decoder_ffn_embed_dim', args.encoder_ffn_embed_dim)
     args.decoder_layers = getattr(args, 'decoder_layers', 6)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 8)
-    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', False)
+    args.decoder_normalize_before = getattr(
+        args, 'decoder_normalize_before', False)
     args.decoder_learned_pos = getattr(args, 'decoder_learned_pos', False)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.)
     args.relu_dropout = getattr(args, 'relu_dropout', 0.)
     args.dropout = getattr(args, 'dropout', 0.1)
-    args.adaptive_softmax_cutoff = getattr(args, 'adaptive_softmax_cutoff', None)
-    args.adaptive_softmax_dropout = getattr(args, 'adaptive_softmax_dropout', 0)
-    args.share_decoder_input_output_embed = getattr(args, 'share_decoder_input_output_embed', False)
+    args.adaptive_softmax_cutoff = getattr(
+        args, 'adaptive_softmax_cutoff', None)
+    args.adaptive_softmax_dropout = getattr(
+        args, 'adaptive_softmax_dropout', 0)
+    args.share_decoder_input_output_embed = getattr(
+        args, 'share_decoder_input_output_embed', False)
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
-    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
+    args.no_token_positional_embeddings = getattr(
+        args, 'no_token_positional_embeddings', False)
 
-    args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_embed_dim)
-    args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
+    args.decoder_output_dim = getattr(
+        args, 'decoder_output_dim', args.decoder_embed_dim)
+    args.decoder_input_dim = getattr(
+        args, 'decoder_input_dim', args.decoder_embed_dim)
 
-    args.encoder_conv_dim = getattr(args, 'encoder_conv_dim', args.encoder_embed_dim)
-    args.decoder_conv_dim = getattr(args, 'decoder_conv_dim', args.decoder_embed_dim)
+    args.encoder_conv_dim = getattr(
+        args, 'encoder_conv_dim', args.encoder_embed_dim)
+    args.decoder_conv_dim = getattr(
+        args, 'decoder_conv_dim', args.decoder_embed_dim)
 
-    args.encoder_kernel_size_list = getattr(args, 'encoder_kernel_size_list', [3, 7, 15, 31, 31, 31, 31])
-    args.decoder_kernel_size_list = getattr(args, 'decoder_kernel_size_list', [3, 7, 15, 31, 31, 31])
+    args.encoder_kernel_size_list = getattr(
+        args, 'encoder_kernel_size_list', [3, 7, 15, 31, 31, 31, 31])
+    args.decoder_kernel_size_list = getattr(
+        args, 'decoder_kernel_size_list', [3, 7, 15, 31, 31, 31])
     if len(args.encoder_kernel_size_list) == 1:
         args.encoder_kernel_size_list = args.encoder_kernel_size_list * args.encoder_layers
     if len(args.decoder_kernel_size_list) == 1:
         args.decoder_kernel_size_list = args.decoder_kernel_size_list * args.decoder_layers
-    assert len(args.encoder_kernel_size_list) == args.encoder_layers, "encoder_kernel_size_list doesn't match encoder_layers"
-    assert len(args.decoder_kernel_size_list) == args.decoder_layers, "decoder_kernel_size_list doesn't match decoder_layers"
+    assert len(
+        args.encoder_kernel_size_list) == args.encoder_layers, "encoder_kernel_size_list doesn't match encoder_layers"
+    assert len(
+        args.decoder_kernel_size_list) == args.decoder_layers, "decoder_kernel_size_list doesn't match decoder_layers"
     args.encoder_glu = getattr(args, 'encoder_glu', True)
     args.decoder_glu = getattr(args, 'decoder_glu', True)
     args.input_dropout = getattr(args, 'input_dropout', 0.1)
-    args.weight_dropout = getattr(args, 'weight_dropout', args.attention_dropout)
+    args.weight_dropout = getattr(
+        args, 'weight_dropout', args.attention_dropout)
 
 
 @register_model_architecture('lightconv_bert', 'lightconv_bert_iwslt_de_en')
@@ -915,7 +994,8 @@ def lightconv_wmt_en_de_big(args):
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 1024)
     args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 4096)
     args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 16)
-    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', False)
+    args.encoder_normalize_before = getattr(
+        args, 'encoder_normalize_before', False)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 1024)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 4096)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 16)

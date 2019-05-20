@@ -11,7 +11,7 @@ class ExtraFeatDecoder(FairseqIncrementalDecoder):
         super().__init__(dictionary)
 
     def forward(
-        self, prev_output_tokens, encoder_out,
-        incremental_state=None, extra_feats=None
+        self, prev_output_tokens, encoder_out, extra_feats,
+        incremental_state=None,
     ):
         raise NotImplementedError
