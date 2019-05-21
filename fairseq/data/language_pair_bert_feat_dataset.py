@@ -84,6 +84,8 @@ class LangPairBertFeatDataset(LanguagePairDataset):
     def __init__(
         self, src, src_sizes, src_dict,
         tgt=None, tgt_sizes=None, tgt_dict=None,
+        bert_src=None, bert_src_sizes=None, bert_src_dict=None,
+        bert_tgt=None, bert_tgt_sizes=None, bert_tgt_dict=None,
         left_pad_source=True, left_pad_target=False,
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True,
@@ -96,14 +98,21 @@ class LangPairBertFeatDataset(LanguagePairDataset):
             max_source_positions, max_target_positions,
             shuffle, input_feeding, remove_eos_from_source, append_eos_to_target
         )
-        # TODO
-        # self.src_raw = src_raw
-        # self.tgt_raw = tgt_raw
+        self.bert_src = bert_src
+        self.bert_tgt = bert_tgt
+        self.bert_src_sizes = bert_src_sizes
+        self.bert_tgt_sizes = bert_tgt_sizes
+        self.bert_src_dict = bert_src_dict
+        self.bert_tgt_dict = bert_tgt_dict
         self.feat_embedder = BertFeatEmbed()
 
     def __getitem__(self, index):
         tgt_item = self.tgt[index] if self.tgt is not None else None
         src_item = self.src[index]
+
+        bert_tgt_item = self.bert_tgt[index]
+        bert_src_item = self.bert_src[index]
+
         # Append EOS to end of tgt sentence if it does not have an EOS and remove
         # EOS from end of src sentence if it exists. This is useful when we use
         # use existing datasets for opposite directions i.e., when we want to
@@ -120,19 +129,19 @@ class LangPairBertFeatDataset(LanguagePairDataset):
                 src_item = self.src[index][:-1]
 
         # add bert feature embeddings
-        src_tokens = [self.src_dict[tok] for tok in src_item]
-        tgt_tokens = [self.tgt_dict[tok] for tok in tgt_item]
+        src_tokens = [self.bert_src_dict[tok] for tok in bert_src_item]
+        tgt_tokens = [self.bert_tgt_dict[tok] for tok in bert_tgt_item]
         # remove EOS
-        eos = self.tgt_dict[self.tgt_dict.eos()] if self.tgt_dict \
-            else self.src_dict[self.src_dict.eos()]
+        eos = self.bert_tgt_dict[self.bert_tgt_dict.eos()] if self.bert_tgt_dict \
+            else self.bert_src_dict[self.bert_src_dict.eos()]
         if src_tokens[-1] == eos:
             src_tokens = src_tokens[:len(src_tokens)-1]
         if tgt_tokens[-1] == eos:
             tgt_tokens = tgt_tokens[:len(tgt_tokens)-1]
 
         # remove PAD
-        pad = self.tgt_dict[self.tgt_dict.pad()] if self.tgt_dict \
-            else self.src_dict[self.src_dict.pad()]
+        pad = self.bert_tgt_dict[self.bert_tgt_dict.pad()] if self.bert_tgt_dict \
+            else self.bert_src_dict[self.bert_src_dict.pad()]
         if pad in src_tokens:
             raise RuntimeError
         if pad in tgt_tokens:
