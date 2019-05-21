@@ -15,6 +15,14 @@ def collate(
     if len(samples) == 0:
         return {}
 
+    def my_stack(list_of_tensors, pad_idx):
+        max_len = max([t.size(0) for t in list_of_tensors])
+        result = torch.zeros(len(list_of_tensors), max_len, 4, 768)
+        result.fill_(pad_idx)
+        for i, t in enumerate(list_of_tensors):
+            result[i] = t
+        return result
+
     def merge(key, left_pad, move_eos_to_beginning=False):
         return data_utils.collate_tokens(
             [s[key] for s in samples],
@@ -50,8 +58,11 @@ def collate(
 
     bert_src = [s['bert_src'] for s in samples]
     bert_tgt = [s['bert_tgt'] for s in samples]
-    bert_src = torch.stack(bert_src)
-    bert_tgt = torch.stack(bert_tgt)
+
+    # bert_src = torch.stack(bert_src)
+    # bert_tgt = torch.stack(bert_tgt)
+    bert_src = my_stack(bert_src, pad_idx)
+    bert_tgt = my_stack(bert_tgt, pad_idx)
     batch = {
         'id': id,
         'nsentences': len(samples),
@@ -75,7 +86,8 @@ class LangPairBertFeatDataset(LanguagePairDataset):
         tgt=None, tgt_sizes=None, tgt_dict=None,
         left_pad_source=True, left_pad_target=False,
         max_source_positions=1024, max_target_positions=1024,
-        shuffle=True, input_feeding=True, remove_eos_from_source=False, append_eos_to_target=False,
+        shuffle=True, input_feeding=True,
+        remove_eos_from_source=False, append_eos_to_target=False,
     ):
         super().__init__(
             src, src_sizes, src_dict,
@@ -84,6 +96,9 @@ class LangPairBertFeatDataset(LanguagePairDataset):
             max_source_positions, max_target_positions,
             shuffle, input_feeding, remove_eos_from_source, append_eos_to_target
         )
+        # TODO
+        # self.src_raw = src_raw
+        # self.tgt_raw = tgt_raw
         self.feat_embedder = BertFeatEmbed()
 
     def __getitem__(self, index):
