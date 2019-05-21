@@ -7,7 +7,7 @@ use_cuda = torch.cuda.is_available()
 
 class BertFeatEmbed:
 
-    def __init__(self, num_layers=4, emb_dim=768, bert_model='bert-base-uncased'):
+    def __init__(self, num_layers=4, emb_dim=768, bert_model='bert-base-cased'):
         self.num_layers = num_layers
         self.emb_dim = emb_dim
 
@@ -23,8 +23,25 @@ class BertFeatEmbed:
 
         self.tokenizer = BertTokenizer.from_pretrained(
             bert_model,
-            do_lower_case=True
+            do_lower_case=False
         )
+
+    def new_prep_sentence(self, sentence):
+        '''Sentences are pre-tokenized'''
+        word_starts = [1]  # indices where words are split into subwords
+        tokens = [['[CLS]']]
+
+        for i, subword in enumerate(sentence.split(' ')):
+            tokens.append(subword)
+            if '##' not in subword:
+                word_starts.append(i)
+        tokens.append(['[SEP]'])
+        breakpoint()
+        # flatten the list
+        tokens = [item for sublist in tokens for item in sublist]
+        token_ids = self.tokenizer.convert_tokens_to_ids(tokens)
+
+        return (tokens, token_ids, word_starts)
 
     def prepare_sentence(self, sentence):
         word_starts = [1]  # indices where words are split into subwords
@@ -51,8 +68,8 @@ class BertFeatEmbed:
         )
 
         # (1) Tokenize using BERT tokenizer
-        tokens, token_ids, word_starts = self.prepare_sentence(tokens)
-
+        tokens, token_ids, word_starts = self.new_prep_sentence(tokens)
+        breakpoint()
         # (2) Use BERT for ctx embedding
         with torch.no_grad():
             ids = torch.tensor([token_ids])
