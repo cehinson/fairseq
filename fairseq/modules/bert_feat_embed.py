@@ -28,22 +28,20 @@ class BertFeatEmbed:
 
     def new_prep_sentence(self, sentence):
         '''Sentences are pre-tokenized'''
-        word_starts = [1]  # indices where words are split into subwords
-        tokens = [['[CLS]']]
 
-        for i, subword in enumerate(sentence.split(' ')):
+        word_starts = []  # indices where words are split into subwords
+        tokens = ['[CLS]']
+        for i, subword in enumerate(sentence, 1):
             tokens.append(subword)
             if '##' not in subword:
                 word_starts.append(i)
-        tokens.append(['[SEP]'])
-        breakpoint()
-        # flatten the list
-        tokens = [item for sublist in tokens for item in sublist]
+        tokens.append('[SEP]')
         token_ids = self.tokenizer.convert_tokens_to_ids(tokens)
 
         return (tokens, token_ids, word_starts)
 
     def prepare_sentence(self, sentence):
+        '''We have to tokenize the sentences ourselves...'''
         word_starts = [1]  # indices where words are split into subwords
         tokens = [['[CLS]']]
 
@@ -63,13 +61,12 @@ class BertFeatEmbed:
     def __call__(self, tokens):
         features = torch.zeros(
             len(tokens),
-            self.num_layers,            # Number of Layers
+            self.num_layers,       # Number of Layers
             self.emb_dim           # Hidden dimension
         )
 
         # (1) Tokenize using BERT tokenizer
         tokens, token_ids, word_starts = self.new_prep_sentence(tokens)
-        breakpoint()
         # (2) Use BERT for ctx embedding
         with torch.no_grad():
             ids = torch.tensor([token_ids])
@@ -81,7 +78,9 @@ class BertFeatEmbed:
                 layer_out[-self.num_layers:]
             ).squeeze(1)
             # only take hidden states that count...
-            layer_out = layer_out[:, word_starts, :]
+            # layer_out = layer_out[:, word_starts, :]
+            # ignore [CLS] and [SEP] tags
+            layer_out = layer_out[:, 1:len(tokens)-1, :]
 
         features = layer_out.permute(1, 0, 2)
         return features
