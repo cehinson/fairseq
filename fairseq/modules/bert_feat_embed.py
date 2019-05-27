@@ -58,29 +58,38 @@ class BertFeatEmbed:
 
         return (tokens, token_ids, word_starts)
 
-    def __call__(self, tokens):
+    def __call__(self, sample, max_len=512):
         features = torch.zeros(
-            len(tokens),
+            len(sample),
             self.num_layers,       # Number of Layers
             self.emb_dim           # Hidden dimension
         )
+        # chunk into chunks < max_len
+        chunks = [sample[x:x+max_len] for x in range(0, len(sample), max_len)]
+        chunk_lens = [len(sample[x:x+max_len])
+                      for x in range(0, len(sample), max_len)]
+        # indices where chunks start/stop
+        cids = [sum(chunk_lens[:i]) for i in range(len(chunk_lens)+1)]
 
-        # (1) Tokenize using BERT tokenizer
-        tokens, token_ids, word_starts = self.new_prep_sentence(tokens)
-        # (2) Use BERT for ctx embedding
-        with torch.no_grad():
-            ids = torch.tensor([token_ids])
-            if use_cuda:
-                ids = ids.cuda()
-            layer_out, _ = self.model(ids)
-            # take the last num_layers layers
-            layer_out = torch.stack(
-                layer_out[-self.num_layers:]
-            ).squeeze(1)
-            # only take hidden states that count...
-            # layer_out = layer_out[:, word_starts, :]
-            # ignore [CLS] and [SEP] tags
-            layer_out = layer_out[:, 1:len(tokens)-1, :]
+        for i, chunk in enumerate(chunks, 1):
+            # (1) Tokenize using BERT tokenizer
+            tokens, token_ids, word_starts = self.new_prep_sentence(chunk)
+            # (2) Use BERT for ctx embedding
+            with torch.no_grad():
+                ids = torch.tensor([token_ids])
+                if use_cuda:
+                    ids = ids.cuda()
+                layer_out, _ = self.model(ids)
+                # take the last num_layers layers
+                layer_out = torch.stack(
+                    layer_out[-self.num_layers:]
+                ).squeeze(1)
+                # only take hidden states that count...
+                # layer_out = layer_out[:, word_starts, :]
+                # ignore [CLS] and [SEP] tags
+                layer_out = layer_out[:, 1:len(tokens)-1, :]
+                layer_out = layer_out.permute(1, 0, 2)
 
-        features = layer_out.permute(1, 0, 2)
+            features[cids[i-1]:cids[i], :, :] = layer_out
+
         return features
