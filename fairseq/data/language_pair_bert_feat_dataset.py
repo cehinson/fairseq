@@ -20,7 +20,7 @@ def collate(
         result = torch.zeros(len(list_of_tensors), max_len, 4, 768)
         result.fill_(pad_idx)
         for i, t in enumerate(list_of_tensors):
-            result[i] = t
+            result[i][:t.size(0), :, :] = t
         return result
 
     def merge(key, left_pad, move_eos_to_beginning=False):
