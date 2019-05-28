@@ -71,7 +71,6 @@ class BertFeatEmbed:
         # indices where chunks start/stop
         cids = [sum(chunk_lens[:i]) for i in range(len(chunk_lens)+1)]
 
-        breakpoint()
         for i, chunk in enumerate(chunks, 1):
             # (1) Tokenize using BERT tokenizer
             tokens, token_ids, word_starts = self.new_prep_sentence(chunk)
