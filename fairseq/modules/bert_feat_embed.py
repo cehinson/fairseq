@@ -64,7 +64,8 @@ class BertFeatEmbed:
             self.emb_dim           # Hidden dimension
         )
         # use "[UNK]" to replace <unk>
-        sample.replace("<unk>", "[UNK]")
+        sample = ["[UNK]" if x == "<unk>" else x for x in sample]
+        # sample.replace("<unk>", "[UNK]")
 
         # chunk into chunks < max_len
         chunks = [sample[x:x+max_len] for x in range(0, len(sample), max_len)]
