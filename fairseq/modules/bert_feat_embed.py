@@ -28,7 +28,6 @@ class BertFeatEmbed:
 
     def new_prep_sentence(self, sentence):
         '''Sentences are pre-tokenized'''
-
         word_starts = []  # indices where words are split into subwords
         tokens = ['[CLS]']
         for i, subword in enumerate(sentence, 1):
@@ -64,6 +63,9 @@ class BertFeatEmbed:
             self.num_layers,       # Number of Layers
             self.emb_dim           # Hidden dimension
         )
+        # use "[UNK]" to replace <unk>
+        sample.replace("<unk>", "[UNK]")
+
         # chunk into chunks < max_len
         chunks = [sample[x:x+max_len] for x in range(0, len(sample), max_len)]
         chunk_lens = [len(sample[x:x+max_len])
