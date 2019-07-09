@@ -547,8 +547,8 @@ class LightConvBertDecoder(ExtraFeatDecoder):
             # concat the embeddings
             x = torch.cat((x, bert_final), dim=2)
         else:
-            padding = torch.zeros(x.size())
-            x = torch.cat((x, padding), dim=2).cuda()
+            padding = torch.zeros(x.size()).cuda()
+            x = torch.cat((x, padding), dim=2)
         # move dropout to here...
         x = F.dropout(x, p=self.dropout, training=self.training)
 
