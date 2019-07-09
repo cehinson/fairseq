@@ -545,7 +545,7 @@ class LightConvBertDecoder(ExtraFeatDecoder):
             # cat to the end
             bert_final = torch.cat((bert_final, tag_tensor), dim=1)
             # concat the embeddings
-            x = torch.cat((x, bert_final), dim=2)
+            x = torch.cat((x, bert_final), dim=2).cuda()
         else:
             padding = torch.zeros(x.size())
             x = torch.cat((x, padding), dim=2)
