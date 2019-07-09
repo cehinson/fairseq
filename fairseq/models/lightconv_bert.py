@@ -493,7 +493,7 @@ class LightConvBertDecoder(ExtraFeatDecoder):
         if self.normalize:
             self.layer_norm = LayerNorm(embed_dim)
 
-    def forward(self, prev_output_tokens, encoder_out, bert_tgt, incremental_state=None):
+    def forward(self, prev_output_tokens, encoder_out, bert_tgt=None, incremental_state=None):
         """
         Args:
             prev_output_tokens (LongTensor): previous decoder outputs of shape
@@ -531,21 +531,22 @@ class LightConvBertDecoder(ExtraFeatDecoder):
             x += positions
         # x = F.dropout(x, p=self.dropout, training=self.training)
 
-        # map the bert features to same size as embedding
-        bert_feat = self.bert_hidden_proj(bert_tgt)
-        bert_feat = bert_feat.transpose(2, 3)
-        # weighted sum of the features
-        bert_final = torch.sum(bert_feat * self.bert_feat_weights.softmax(0), 3)
-        # at this point, x should be one token longer than bert_final
-        # this is because of the <eos> tag
-        assert((x.size(1) - 1) == bert_final.size(1))
-        # deal with this by duplicating the normal <eos> embedding
-        tag_tensor = x[:, 0, :].clone()
-        tag_tensor = tag_tensor.unsqueeze(1)
-        # cat to the end
-        bert_final = torch.cat((bert_final, tag_tensor), dim=1)
-        # concat the embeddings
-        x = torch.cat((x, bert_final), dim=2)
+        if bert_tgt:
+            # map the bert features to same size as embedding
+            bert_feat = self.bert_hidden_proj(bert_tgt)
+            bert_feat = bert_feat.transpose(2, 3)
+            # weighted sum of the features
+            bert_final = torch.sum(bert_feat * self.bert_feat_weights.softmax(0), 3)
+            # at this point, x should be one token longer than bert_final
+            # this is because of the <eos> tag
+            assert((x.size(1) - 1) == bert_final.size(1))
+            # deal with this by duplicating the normal <eos> embedding
+            tag_tensor = x[:, 0, :].clone()
+            tag_tensor = tag_tensor.unsqueeze(1)
+            # cat to the end
+            bert_final = torch.cat((bert_final, tag_tensor), dim=1)
+            # concat the embeddings
+            x = torch.cat((x, bert_final), dim=2)
         # move dropout to here...
         x = F.dropout(x, p=self.dropout, training=self.training)
 
