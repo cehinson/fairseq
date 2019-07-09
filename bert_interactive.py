@@ -18,7 +18,7 @@ import torch
 from fairseq import checkpoint_utils, options, tasks, utils
 from fairseq.sequence_generator import SequenceGenerator
 
-from modules import bert_feat_embed
+from fairseq.modules import bert_feat_embed
 
 Batch = namedtuple('Batch', 'ids src_tokens src_lengths')
 Translation = namedtuple('Translation', 'src_str hypos pos_scores alignments')
