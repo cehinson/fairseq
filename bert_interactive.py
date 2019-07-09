@@ -128,7 +128,9 @@ def main(args):
                 src_lengths = src_lengths.cuda()
 
             print(src_tokens)
-            bert_src = feat_embedder(src_tokens)
+            src_str = task.source_dictionary.string(src_tokens)
+            print(src_str)
+            bert_src = feat_embedder(src_str)
 
             sample = {
                 'net_input': {
