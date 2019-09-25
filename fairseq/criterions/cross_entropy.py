@@ -7,6 +7,7 @@
 
 import math
 import torch.nn.functional as F
+import torch
 
 from fairseq import utils
 
@@ -42,8 +43,15 @@ class CrossEntropyCriterion(FairseqCriterion):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         lprobs = lprobs.view(-1, lprobs.size(-1))
         target = model.get_targets(sample, net_output).view(-1)
-        loss = F.nll_loss(lprobs, target, size_average=False, ignore_index=self.padding_idx,
-                          reduce=reduce)
+
+        if 'edit_weights' in sample.keys():
+            weights = sample['edit_weights'].view(-1)
+            loss = F.nll_loss(lprobs, target, size_average=False,
+                              ignore_index=self.padding_idx, reduce=False)
+            loss = torch.dot(loss, weights)
+        else:
+            loss = F.nll_loss(lprobs, target, size_average=False,
+                              ignore_index=self.padding_idx, reduce=reduce)
         return loss, loss
 
     @staticmethod
