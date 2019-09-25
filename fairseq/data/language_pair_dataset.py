@@ -12,10 +12,12 @@ from fairseq import utils
 
 from . import data_utils, FairseqDataset
 
+from difflib import SequenceMatcher
+
 
 def collate(
     samples, pad_idx, eos_idx, left_pad_source=True, left_pad_target=False,
-    input_feeding=True,
+    input_feeding=True, edit_weight=1,
 ):
     if len(samples) == 0:
         return {}
@@ -53,6 +55,23 @@ def collate(
     else:
         ntokens = sum(len(s['source']) for s in samples)
 
+    # upweight the edits
+    edit_weights = []
+    if edit_weight > 1:
+        for src, tgt in zip(src_tokens, target):
+            # NOTE does not work if src and tgt are left as tensors...
+            src = [str(val.item()) for val in src]
+            tgt = [str(val.item()) for val in tgt]
+            matcher = SequenceMatcher(None, a=tgt, b=src)
+            weights = []
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag == 'equal':
+                    weights += (i2-i1) * [1]
+                elif tag != 'insert':
+                    weights += (i2-i1) * [edit_weight]
+            edit_weights.append(torch.FloatTensor(weights))
+    edit_weights = torch.stack(edit_weights)
+
     batch = {
         'id': id,
         'nsentences': len(samples),
@@ -62,6 +81,7 @@ def collate(
             'src_lengths': src_lengths,
         },
         'target': target,
+        'edit_weights': edit_weights,
     }
     if prev_output_tokens is not None:
         batch['net_input']['prev_output_tokens'] = prev_output_tokens
@@ -104,6 +124,7 @@ class LanguagePairDataset(FairseqDataset):
         left_pad_source=True, left_pad_target=False,
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True, remove_eos_from_source=False, append_eos_to_target=False,
+        edit_weight=1,
     ):
         if tgt_dict is not None:
             assert src_dict.pad() == tgt_dict.pad()
@@ -123,6 +144,7 @@ class LanguagePairDataset(FairseqDataset):
         self.input_feeding = input_feeding
         self.remove_eos_from_source = remove_eos_from_source
         self.append_eos_to_target = append_eos_to_target
+        self.edit_weight = edit_weight
 
     def __getitem__(self, index):
         tgt_item = self.tgt[index] if self.tgt is not None else None
@@ -182,7 +204,7 @@ class LanguagePairDataset(FairseqDataset):
         return collate(
             samples, pad_idx=self.src_dict.pad(), eos_idx=self.src_dict.eos(),
             left_pad_source=self.left_pad_source, left_pad_target=self.left_pad_target,
-            input_feeding=self.input_feeding,
+            input_feeding=self.input_feeding, edit_weight=self.edit_weight,
         )
 
     def num_tokens(self, index):

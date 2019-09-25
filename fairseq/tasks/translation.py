@@ -67,6 +67,8 @@ class TranslationTask(FairseqTask):
                             help='max number of tokens in the target sequence')
         parser.add_argument('--upsample-primary', default=1, type=int,
                             help='amount to upsample primary dataset')
+        parser.add_argument('--upweight-edits', default=1, type=int,
+                            help='Increase weight for edited tokens when computing loss')
         # fmt: on
 
     def __init__(self, args, src_dict, tgt_dict):
@@ -174,6 +176,7 @@ class TranslationTask(FairseqTask):
             left_pad_target=self.args.left_pad_target,
             max_source_positions=self.args.max_source_positions,
             max_target_positions=self.args.max_target_positions,
+            edit_weight=self.args.upweight_edits,
         )
 
     def build_dataset_for_inference(self, src_tokens, src_lengths):
