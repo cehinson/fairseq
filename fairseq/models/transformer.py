@@ -54,6 +54,10 @@ class TransformerModel(FairseqModel):
                             help='dropout probability for attention weights')
         parser.add_argument('--activation-dropout', '--relu-dropout', type=float, metavar='D',
                             help='dropout probability after activation in FFN.')
+        parser.add_argument('--src_dropout', type=float, metavar='D',
+                            help='dropout entire source embedding vectors')
+        parser.add_argument('--tgt_dropout', type=float, metavar='D',
+                            help='dropout entire target embedding vectors')
         parser.add_argument('--encoder-embed-path', type=str, metavar='STR',
                             help='path to pre-trained encoder embedding')
         parser.add_argument('--encoder-embed-dim', type=int, metavar='N',
@@ -270,6 +274,7 @@ class TransformerEncoder(FairseqEncoder):
     def __init__(self, args, dictionary, embed_tokens):
         super().__init__(dictionary)
         self.dropout = args.dropout
+        self.src_dropout = args.src_dropout
 
         embed_dim = embed_tokens.embedding_dim
         self.padding_idx = embed_tokens.padding_idx
@@ -309,9 +314,13 @@ class TransformerEncoder(FairseqEncoder):
         """
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(src_tokens)
+
         if self.embed_positions is not None:
             x += self.embed_positions(src_tokens)
         x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # dropout entire embedding vectors from the source
+        x = F.dropout2d(x, p=self.src_dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -396,6 +405,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
     def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False, final_norm=True):
         super().__init__(dictionary)
         self.dropout = args.dropout
+        self.tgt_dropout = args.tgt_dropout
         self.share_input_output_embed = args.share_decoder_input_output_embed
 
         input_embed_dim = embed_tokens.embedding_dim
@@ -481,6 +491,9 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         if positions is not None:
             x += positions
         x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # dropout entire embedding vectors p=0.1 for target
+        x = F.dropout2d(x, p=self.tgt_dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
