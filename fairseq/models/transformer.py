@@ -320,7 +320,7 @@ class TransformerEncoder(FairseqEncoder):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # dropout entire embedding vectors from the source
-        x = F.dropout2d(x, p=self.src_dropout)
+        x = F.dropout2d(x, p=self.src_dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -493,7 +493,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # dropout entire embedding vectors p=0.1 for target
-        x = F.dropout2d(x, p=self.tgt_dropout)
+        x = F.dropout2d(x, p=self.tgt_dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
