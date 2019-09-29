@@ -1,18 +1,17 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 from collections import OrderedDict
 
 from fairseq import utils
-from fairseq.tasks.multilingual_translation import MultilingualTranslationTask
-
-from . import FairseqMultiModel, register_model, register_model_architecture
-
-from .transformer import (
+from fairseq.models import (
+    FairseqMultiModel,
+    register_model,
+    register_model_architecture,
+)
+from fairseq.models.transformer import (
     base_architecture,
     Embedding,
     TransformerModel,
@@ -57,6 +56,7 @@ class MultilingualTransformerModel(FairseqMultiModel):
     @classmethod
     def build_model(cls, args, task):
         """Build a new model instance."""
+        from fairseq.tasks.multilingual_translation import MultilingualTranslationTask
         assert isinstance(task, MultilingualTranslationTask)
 
         # make sure all arguments are present in older models

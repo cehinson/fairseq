@@ -1,22 +1,22 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 from collections import defaultdict
-from typing import Callable
+import contextlib
 import copy
 import importlib.util
+import math
 import os
 import sys
+from typing import Callable, List
 import warnings
 
 import torch
 import torch.nn.functional as F
 
-from fairseq.modules import gelu, gelu_fast
+from fairseq.modules import gelu, gelu_accurate
 
 
 def load_ensemble_for_inference(filenames, task, model_arg_overrides=None):
@@ -30,24 +30,32 @@ def load_ensemble_for_inference(filenames, task, model_arg_overrides=None):
     )
 
 
-def move_to_cuda(sample):
+def apply_to_sample(f, sample):
     if len(sample) == 0:
         return {}
 
-    def _move_to_cuda(maybe_tensor):
-        if torch.is_tensor(maybe_tensor):
-            return maybe_tensor.cuda()
-        elif isinstance(maybe_tensor, dict):
+    def _apply(x):
+        if torch.is_tensor(x):
+            return f(x)
+        elif isinstance(x, dict):
             return {
-                key: _move_to_cuda(value)
-                for key, value in maybe_tensor.items()
+                key: _apply(value)
+                for key, value in x.items()
             }
-        elif isinstance(maybe_tensor, list):
-            return [_move_to_cuda(x) for x in maybe_tensor]
+        elif isinstance(x, list):
+            return [_apply(x) for x in x]
         else:
-            return maybe_tensor
+            return x
 
-    return _move_to_cuda(sample)
+    return _apply(sample)
+
+
+def move_to_cuda(sample):
+
+    def _move_to_cuda(tensor):
+        return tensor.cuda()
+
+    return apply_to_sample(_move_to_cuda, sample)
 
 
 INCREMENTAL_STATE_INSTANCE_ID = defaultdict(lambda: 0)
@@ -83,7 +91,7 @@ def set_incremental_state(module, incremental_state, key, value):
 def load_align_dict(replace_unk):
     if replace_unk is None:
         align_dict = None
-    elif isinstance(replace_unk, str):
+    elif isinstance(replace_unk, str) and len(replace_unk) > 0:
         # Load alignment dictionary for unknown word replacement if it was passed as an argument.
         align_dict = {}
         with open(replace_unk, 'r') as f:
@@ -146,8 +154,7 @@ def replace_unk(hypo_str, src_str, alignment, align_dict, unk):
     return ' '.join(hypo_tokens)
 
 
-def post_process_prediction(hypo_tokens, src_str, alignment, align_dict, tgt_dict, remove_bpe):
-    from fairseq import tokenizer
+def post_process_prediction(hypo_tokens, src_str, alignment, align_dict, tgt_dict, remove_bpe=None):
     hypo_str = tgt_dict.string(hypo_tokens, remove_bpe)
     if align_dict is not None:
         hypo_str = replace_unk(hypo_str, src_str, alignment, align_dict, tgt_dict.unk_string())
@@ -163,8 +170,14 @@ def make_positions(tensor, padding_idx, onnx_trace=False):
 
     Position numbers begin at padding_idx+1. Padding symbols are ignored.
     """
-    mask = tensor.ne(padding_idx).long()
-    return torch.cumsum(mask, dim=1) * mask + padding_idx
+    # The series of casts and type-conversions here are carefully
+    # balanced to both work with ONNX export and XLA. In particular XLA
+    # prefers ints, cumsum defaults to output longs, and ONNX doesn't know
+    # how to handle the dtype kwarg in cumsum.
+    mask = tensor.ne(padding_idx).int()
+    return (
+        torch.cumsum(mask, dim=1).type_as(mask) * mask
+    ).long() + padding_idx
 
 
 def strip_pad(tensor, pad):
@@ -264,6 +277,10 @@ def import_user_module(args):
     module_path = getattr(args, 'user_dir', None)
     if module_path is not None:
         module_path = os.path.abspath(args.user_dir)
+        if not os.path.exists(module_path):
+            fairseq_rel_path = os.path.join(os.path.dirname(__file__), '..', args.user_dir)
+            if os.path.exists(fairseq_rel_path):
+                module_path = fairseq_rel_path
         module_parent, module_name = os.path.split(module_path)
 
         if module_name not in sys.modules:
@@ -286,6 +303,13 @@ def log_softmax(x, dim, onnx_trace=False):
         return F.log_softmax(x, dim=dim, dtype=torch.float32)
 
 
+def get_perplexity(loss):
+    try:
+        return '{:.2f}'.format(math.pow(2, loss))
+    except OverflowError:
+        return float('inf')
+
+
 def deprecation_warning(message, stacklevel=3):
     # don't use DeprecationWarning, since it's ignored by default
     warnings.warn(message, stacklevel=stacklevel)
@@ -298,6 +322,48 @@ def get_activation_fn(activation: str) -> Callable:
     elif activation == 'gelu':
         return gelu
     elif activation == 'gelu_fast':
-        return gelu_fast
+        deprecation_warning('--activation-fn=gelu_fast has been renamed to gelu_accurate')
+        return gelu_accurate
+    elif activation == 'gelu_accurate':
+        return gelu_accurate
+    elif activation == 'tanh':
+        return torch.tanh
+    elif activation == 'linear':
+        return lambda x: x
     else:
-        raise RuntimeError(f"--activation-fn {activation} not supported")
+        raise RuntimeError("--activation-fn {} not supported".format(activation))
+
+
+def get_available_activation_fns() -> List:
+    return [
+        'relu',
+        'gelu',
+        'gelu_fast',  # deprecated
+        'gelu_accurate',
+        'tanh',
+        'linear',
+    ]
+
+
+@contextlib.contextmanager
+def eval(model):
+    is_training = model.training
+    model.eval()
+    yield
+    model.train(is_training)
+
+
+def has_parameters(module):
+    try:
+        next(module.parameters())
+        return True
+    except StopIteration:
+        return False
+
+
+def set_torch_seed(seed):
+    # Set seed based on args.seed and the update number so that we get
+    # reproducible results when resuming from checkpoints
+    assert isinstance(seed, int)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)

@@ -1,9 +1,7 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import math
 import torch
@@ -15,7 +13,7 @@ from . import FairseqOptimizer, register_optimizer
 @register_optimizer('adafactor')
 class FairseqAdafactor(FairseqOptimizer):
     def __init__(self, args, params):
-        super().__init__(args, params)
+        super().__init__(args)
         self._optimizer = Adafactor(params, **self.optimizer_config)
 
     @staticmethod
@@ -100,6 +98,10 @@ class Adafactor(torch.optim.Optimizer):
                         relative_step=relative_step, warmup_init=warmup_init)
         super(Adafactor, self).__init__(params, defaults)
 
+    @property
+    def supports_memory_efficient_fp16(self):
+        return True
+
     def _get_lr(self, param_group, param_state):
         rel_step_sz = param_group['lr']
         if param_group['relative_step']:
@@ -119,7 +121,7 @@ class Adafactor(torch.optim.Optimizer):
         return tensor.norm(2) / (tensor.numel() ** 0.5)
 
     def _approx_sq_grad(self, exp_avg_sq_row, exp_avg_sq_col, output):
-        r_factor = (exp_avg_sq_row / exp_avg_sq_row.mean(dim=-1)).rsqrt_().unsqueeze(-1)
+        r_factor = (exp_avg_sq_row / exp_avg_sq_row.mean(dim=-1).unsqueeze(-1)).rsqrt_().unsqueeze(-1)
         c_factor = exp_avg_sq_col.unsqueeze(-2).rsqrt()
         torch.mul(r_factor, c_factor, out=output)
 
@@ -138,7 +140,7 @@ class Adafactor(torch.optim.Optimizer):
             for p in group['params']:
                 if p.grad is None:
                     continue
-                grad = p.grad.data
+                grad = p.grad.data.float()
                 if grad.is_sparse:
                     raise RuntimeError('Adafactor does not support sparse gradients.')
 
@@ -160,9 +162,19 @@ class Adafactor(torch.optim.Optimizer):
                         state['exp_avg_sq'] = torch.zeros_like(grad)
 
                     state['RMS'] = 0
+                else:
+                    if use_first_moment:
+                        state['exp_avg'] = state['exp_avg'].type_as(grad)
+                    if factored:
+                        state['exp_avg_sq_row'] = state['exp_avg_sq_row'].type_as(grad)
+                        state['exp_avg_sq_col'] = state['exp_avg_sq_col'].type_as(grad)
+                    else:
+                        state['exp_avg_sq'] = state['exp_avg_sq'].type_as(grad)
+
+                p_data_fp32 = p.data.float()
 
                 state['step'] += 1
-                state['RMS'] = self._rms(p.data)
+                state['RMS'] = self._rms(p_data_fp32)
                 group['lr'] = self._get_lr(group, state)
 
                 beta2t = 1.0 - math.pow(state['step'], group['decay_rate'])
@@ -192,8 +204,10 @@ class Adafactor(torch.optim.Optimizer):
                     update = exp_avg
 
                 if group['weight_decay'] != 0:
-                    p.data.add_(-group['weight_decay'] * group['lr'], p.data)
+                    p_data_fp32.add_(-group['weight_decay'] * group['lr'], p_data_fp32)
 
-                p.data.add_(-update)
+                p_data_fp32.add_(-update)
+
+                p.data.copy_(p_data_fp32)
 
         return loss

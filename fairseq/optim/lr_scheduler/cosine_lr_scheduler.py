@@ -1,9 +1,7 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import math
 
@@ -18,7 +16,7 @@ class CosineSchedule(FairseqLRScheduler):
 
     We also support a warmup phase where we linearly increase the learning rate
     from some initial learning rate (``--warmup-init-lr``) until the configured
-    learning rate (``--lr``).
+    max learning rate (``--max-lr``).
 
     During warmup::
 
@@ -79,7 +77,7 @@ class CosineSchedule(FairseqLRScheduler):
                             help='warmup the learning rate linearly for the first N updates')
         parser.add_argument('--warmup-init-lr', default=-1, type=float, metavar='LR',
                             help='initial learning rate during warmup phase; default is args.lr')
-        parser.add_argument('--max-lr', required=True, type=float, metavar='LR',
+        parser.add_argument('--max-lr', type=float, metavar='LR',
                             help='max learning rate, must be more than args.lr')
         parser.add_argument('--t-mult', default=1, type=float, metavar='LR',
                             help='factor to grow the length of each period')

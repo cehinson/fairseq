@@ -1,9 +1,7 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 from . import FairseqLRScheduler, register_lr_scheduler
 
@@ -60,8 +58,13 @@ class PolynomialDecaySchedule(FairseqLRScheduler):
         """Update the learning rate after each update."""
         if self.args.warmup_updates > 0 and num_updates <= self.args.warmup_updates:
             self.warmup_factor = num_updates / float(self.args.warmup_updates)
-            self.optimizer.set_lr(self.warmup_factor * self.lr)
+            lr = self.warmup_factor * self.lr
+        elif num_updates >= self.total_num_update:
+            lr = self.end_learning_rate
         else:
-            lr = (self.lr - self.end_learning_rate) * (1 - num_updates / self.total_num_update) ** (self.power) + self.end_learning_rate
-            self.optimizer.set_lr(lr)
+            warmup = self.args.warmup_updates
+            lr_range = self.lr - self.end_learning_rate
+            pct_remaining = 1 - (num_updates - warmup) / (self.total_num_update - warmup)
+            lr = lr_range * pct_remaining ** (self.power) + self.end_learning_rate
+        self.optimizer.set_lr(lr)
         return self.optimizer.get_lr()

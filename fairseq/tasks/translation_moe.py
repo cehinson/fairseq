@@ -1,34 +1,13 @@
-# Copyright (c) 2017-present, Facebook, Inc.  # All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
-
-import contextlib
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import torch
 
-from fairseq import modules, options, utils
-from fairseq.data import (
-    ConcatDataset,
-    data_utils,
-    Dictionary,
-    IndexedCachedDataset,
-    IndexedDataset,
-    IndexedRawTextDataset,
-    LanguagePairDataset,
-)
-
-from . import register_task
-from .translation import TranslationTask
-
-
-@contextlib.contextmanager
-def eval(model):
-    is_training = model.training
-    model.eval()
-    yield
-    model.train(is_training)
+from fairseq import modules, utils
+from fairseq.tasks import register_task
+from fairseq.tasks.translation import TranslationTask
 
 
 @register_task('translation_moe')
@@ -40,8 +19,8 @@ class TranslationMoETask(TranslationTask):
     (Shen et al., 2019) <https://arxiv.org/abs/1902.07816>`_.
 
     Args:
-        src_dict (Dictionary): dictionary for the source language
-        tgt_dict (Dictionary): dictionary for the target language
+        src_dict (~fairseq.data.Dictionary): dictionary for the source language
+        tgt_dict (~fairseq.data.Dictionary): dictionary for the target language
 
     .. note::
 
@@ -61,9 +40,9 @@ class TranslationMoETask(TranslationTask):
         """Add task-specific arguments to the parser."""
         # fmt: off
         TranslationTask.add_args(parser)
-        parser.add_argument('--method', required=True,
+        parser.add_argument('--method', default='hMoEup',
                             choices=['sMoElp', 'sMoEup', 'hMoElp', 'hMoEup'])
-        parser.add_argument('--num-experts', type=int, metavar='N', required=True,
+        parser.add_argument('--num-experts', default=3, type=int, metavar='N',
                             help='number of experts')
         parser.add_argument('--mean-pool-gating-network', action='store_true',
                             help='use a simple mean-pooling gating network')
@@ -174,7 +153,7 @@ class TranslationMoETask(TranslationTask):
             return lprob_yz
 
         # compute responsibilities without dropout
-        with eval(model):  # disable dropout
+        with utils.eval(model):  # disable dropout
             with torch.no_grad():  # disable autograd
                 lprob_yz = get_lprob_yz()  # B x K
                 prob_z_xy = torch.nn.functional.softmax(lprob_yz, dim=1)

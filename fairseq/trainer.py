@@ -1,15 +1,14 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 """
 Train a network across multiple GPUs.
 """
 
 from collections import OrderedDict
+import contextlib
 from itertools import chain
 import math
 import os
@@ -37,13 +36,14 @@ class Trainer(object):
         self.task = task
 
         # copy model and criterion to current device
-        self.criterion = criterion
+        self._criterion = criterion
         self._model = model
         self.cuda = torch.cuda.is_available() and not args.cpu
         if args.fp16:
+            self._criterion = self._criterion.half()
             self._model = self._model.half()
         if self.cuda:
-            self.criterion = self.criterion.cuda()
+            self._criterion = self._criterion.cuda()
             self._model = self._model.cuda()
 
         self._dummy_batch = dummy_batch
@@ -54,7 +54,13 @@ class Trainer(object):
         self._optim_history = None
         self._optimizer = None
         self._prev_grad_norm = None
+        self._wrapped_criterion = None
         self._wrapped_model = None
+
+        # Fast stats sync avoids memcpy and is 7% faster when tested on 16 nodes.
+        # It is less flexible and syncs only the default stats.
+        self._all_reduce_list = [0.0] * 6
+        self.fast_stat_sync = args.fast_stat_sync
 
         self.init_meters(args)
 
@@ -77,9 +83,24 @@ class Trainer(object):
         self.meters['train_wall'] = StopwatchMeter()  # train wall time in seconds
 
     @property
+    def criterion(self):
+        if self._wrapped_criterion is None:
+            if (
+                utils.has_parameters(self._criterion)
+                and self.args.distributed_world_size > 1
+                and not self.args.use_bmuf
+            ):
+                self._wrapped_criterion = models.DistributedFairseqModel(
+                    self.args, self._criterion
+                )
+            else:
+                self._wrapped_criterion = self._criterion
+        return self._wrapped_criterion
+
+    @property
     def model(self):
         if self._wrapped_model is None:
-            if self.args.distributed_world_size > 1:
+            if self.args.distributed_world_size > 1 and not self.args.use_bmuf:
                 self._wrapped_model = models.DistributedFairseqModel(
                     self.args, self._model,
                 )
@@ -100,7 +121,13 @@ class Trainer(object):
         return self._lr_scheduler
 
     def _build_optimizer(self):
-        params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
+        params = list(
+            filter(
+                lambda p: p.requires_grad,
+                chain(self.model.parameters(), self.criterion.parameters()),
+            )
+        )
+
         if self.args.fp16:
             if self.cuda and torch.cuda.get_device_capability(0)[0] < 7:
                 print('| WARNING: your device does NOT support faster training with --fp16, '
@@ -114,20 +141,32 @@ class Trainer(object):
                 print('| NOTICE: your device may support faster training with --fp16')
             self._optimizer = optim.build_optimizer(self.args, params)
 
+        if self.args.use_bmuf:
+            self._optimizer = optim.FairseqBMUF(self.args, self._optimizer)
+
         # We should initialize the learning rate scheduler immediately after
         # building the optimizer, so that the initial learning rate is set.
         self._lr_scheduler = lr_scheduler.build_lr_scheduler(self.args, self.optimizer)
+        self._lr_scheduler.step_update(0)
 
     def save_checkpoint(self, filename, extra_state):
         """Save all training state in a checkpoint file."""
         if distributed_utils.is_master(self.args):  # only save one checkpoint
             extra_state['train_meters'] = self.meters
             checkpoint_utils.save_state(
-                filename, self.args, self.get_model().state_dict(), self.criterion, self.optimizer,
-                self.lr_scheduler, self._num_updates, self._optim_history, extra_state,
+                filename, self.args, self.get_model().state_dict(), self.get_criterion(),
+                self.optimizer, self.lr_scheduler, self.get_num_updates(),
+                self._optim_history, extra_state,
             )
 
-    def load_checkpoint(self, filename, reset_optimizer=False, reset_lr_scheduler=False, optimizer_overrides=None):
+    def load_checkpoint(
+        self,
+        filename,
+        reset_optimizer=False,
+        reset_lr_scheduler=False,
+        optimizer_overrides=None,
+        reset_meters=False,
+    ):
         """Load all training state from a checkpoint file."""
         extra_state, self._optim_history, last_optim_state = None, [], None
 
@@ -137,15 +176,17 @@ class Trainer(object):
             # load model parameters
             try:
                 self.get_model().load_state_dict(state['model'], strict=True)
+                if utils.has_parameters(self.get_criterion()):
+                    self.get_criterion().load_state_dict(state['criterion'], strict=True)
             except Exception:
                 raise Exception(
-                    'Cannot load model parameters from checkpoint, '
-                    'please ensure that the architectures match.'
+                    'Cannot load model parameters from checkpoint {}; '
+                    'please ensure that the architectures match.'.format(filename)
                 )
 
             extra_state = state['extra_state']
             self._optim_history = state['optimizer_history']
-            last_optim_state = state['last_optimizer_state']
+            last_optim_state = state.get('last_optimizer_state', None)
 
         if last_optim_state is not None and not reset_optimizer:
             # rebuild optimizer after loading model, since params may have changed
@@ -153,7 +194,7 @@ class Trainer(object):
 
             # only reload optimizer and lr_scheduler if they match
             last_optim = self._optim_history[-1]
-            assert last_optim['criterion_name'] == self.criterion.__class__.__name__, \
+            assert last_optim['criterion_name'] == self.get_criterion().__class__.__name__, \
                 'Criterion does not match; please reset the optimizer (--reset-optimizer).'
             assert last_optim['optimizer_name'] == self.optimizer.__class__.__name__, \
                 'Optimizer does not match; please reset the optimizer (--reset-optimizer).'
@@ -162,18 +203,49 @@ class Trainer(object):
                 self.lr_scheduler.load_state_dict(last_optim['lr_scheduler_state'])
             self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
 
-            self._num_updates = last_optim['num_updates']
+            self.set_num_updates(last_optim['num_updates'])
 
-        if extra_state is not None and 'train_meters' in extra_state:
-            self.meters.update(extra_state['train_meters'])
-            del extra_state['train_meters']
+        if extra_state is not None:
+            epoch = extra_state['train_iterator']['epoch']
+            print('| loaded checkpoint {} (epoch {} @ {} updates)'.format(
+                filename, epoch, self.get_num_updates()))
 
-            # reset TimeMeters, since their start times don't make sense anymore
-            for meter in self.meters.values():
-                if isinstance(meter, TimeMeter):
-                    meter.reset()
+            self.lr_step(epoch)
+
+            if 'train_meters' in extra_state and not reset_meters:
+                self.meters.update(extra_state['train_meters'])
+                del extra_state['train_meters']
+
+                # reset TimeMeters, since their start times don't make sense anymore
+                for meter in self.meters.values():
+                    if isinstance(meter, TimeMeter):
+                        meter.reset()
+        else:
+            print('| no existing checkpoint found {}'.format(filename))
 
         return extra_state
+
+    def get_train_iterator(self, epoch, combine=True, load_dataset=True):
+        """Return an EpochBatchIterator over the training set for a given epoch."""
+        if load_dataset:
+            print('| loading train data for epoch {}'.format(epoch))
+            self.task.load_dataset(self.args.train_subset, epoch=epoch, combine=combine)
+        return self.task.get_batch_iterator(
+            dataset=self.task.dataset(self.args.train_subset),
+            max_tokens=self.args.max_tokens,
+            max_sentences=self.args.max_sentences,
+            max_positions=utils.resolve_max_positions(
+                self.task.max_positions(),
+                self.model.max_positions(),
+            ),
+            ignore_invalid_inputs=True,
+            required_batch_size_multiple=self.args.required_batch_size_multiple,
+            seed=self.args.seed,
+            num_shards=self.args.distributed_world_size,
+            shard_id=self.args.distributed_rank,
+            num_workers=self.args.num_workers,
+            epoch=epoch,
+        )
 
     def train_step(self, samples, dummy_batch=False, raise_oom=False):
         """Do forward, backward and parameter update."""
@@ -200,27 +272,39 @@ class Trainer(object):
             else:
                 ignore_grad = False
 
-            try:
-                if self.args.distributed_world_size > 1:
-                    # Whenever *samples* contains more than one mini-batch, we
-                    # want to accumulate gradients locally and only call
-                    # all-reduce in the last backwards pass. Currently the
-                    # *accumulate_grads* flag is only supported by
-                    # LegacyDistributedDataParallel.
-                    if i < len(samples) - 1:
-                        self.model.accumulate_grads = True
-                    else:
-                        self.model.accumulate_grads = False
+            def maybe_no_sync():
+                """
+                Whenever *samples* contains more than one mini-batch, we
+                want to accumulate gradients locally and only call
+                all-reduce in the last backwards pass.
+                """
+                if (
+                    self.args.distributed_world_size > 1
+                    and hasattr(self.model, 'no_sync')
+                    and i < len(samples) - 1
+                ):
+                    return self.model.no_sync()
+                else:
+                    return contextlib.ExitStack()  # dummy contextmanager
 
-                # forward and backward
-                loss, sample_size, logging_output = self.task.train_step(
-                    sample, self.model, self.criterion, self.optimizer,
-                    ignore_grad
-                )
+            try:
+                with maybe_no_sync():
+                    # forward and backward
+                    loss, sample_size, logging_output = self.task.train_step(
+                        sample, self.model, self.criterion, self.optimizer,
+                        ignore_grad
+                    )
 
                 if not ignore_grad:
                     logging_outputs.append(logging_output)
                     sample_sizes.append(sample_size)
+
+                    if self.fast_stat_sync:
+                        self._all_reduce_list[0] += sample_size
+                        self._all_reduce_list[1] += logging_output.get('nsentences', 0.0)
+                        self._all_reduce_list[2] += logging_output.get('loss', 0.0)
+                        self._all_reduce_list[3] += logging_output.get('nll_loss', 0.0)
+                        self._all_reduce_list[4] += logging_output.get('ntokens', 0.0)
             except RuntimeError as e:
                 if 'out of memory' in str(e):
                     msg = (
@@ -240,6 +324,10 @@ class Trainer(object):
                 else:
                     raise e
 
+            if self.fast_stat_sync:
+                self._all_reduce_list[5] += ooms
+
+
         if ooms > 0 and self._oom_batch is not None:
             self.handle_ooms(ooms)
 
@@ -247,7 +335,30 @@ class Trainer(object):
             return None
 
         # gather logging outputs from all replicas
-        if self.args.distributed_world_size > 1:
+        if self.fast_stat_sync:
+            # rework all_gather_list
+            all_reduce_list_tensor = torch.cuda.DoubleTensor(self._all_reduce_list)
+            if self._sync_stats():
+                torch.distributed.all_reduce(all_reduce_list_tensor)
+            # Normalize loss and nll_loss by "sample_size"
+            # and convert to log base 2
+            all_reduce_list_tensor[2:4].div_(
+                (
+                    all_reduce_list_tensor[0:1] *
+                    torch.log(torch.cuda.DoubleTensor([2]))
+                )
+            )
+            self._all_reduce_list = all_reduce_list_tensor.tolist()
+            logging_output = {}
+            [
+                sample_size,
+                logging_output['nsentences'],
+                logging_output['loss'],
+                logging_output['nll_loss'],
+                logging_output['ntokens'],
+                ooms,
+            ] = self._all_reduce_list
+        elif self._sync_stats():
             logging_outputs, sample_sizes, ooms, prev_norms = \
                 zip(*distributed_utils.all_gather_list(
                     [logging_outputs, sample_sizes, ooms, self._prev_grad_norm],
@@ -255,10 +366,12 @@ class Trainer(object):
             logging_outputs = list(chain.from_iterable(logging_outputs))
             sample_sizes = list(chain.from_iterable(sample_sizes))
             ooms = sum(ooms)
-            assert (
-                all(norm == prev_norms[0] for norm in prev_norms)
-                or all(math.isnan(norm) or math.isinf(norm) for norm in prev_norms)
-            ), 'Fatal error: gradients are inconsistent between workers'
+
+            if not self.args.use_bmuf:
+                assert (
+                    all(norm == prev_norms[0] for norm in prev_norms)
+                    or all(math.isnan(norm) or math.isinf(norm) for norm in prev_norms)
+                ), 'Fatal error: gradients are inconsistent between workers'
 
         self.meters['oom'].update(ooms, len(samples))
         if ooms == self.args.distributed_world_size * len(samples):
@@ -266,11 +379,12 @@ class Trainer(object):
             self.zero_grad()
             return None
 
-        # aggregate logging outputs and sample sizes
-        logging_output = self.task.aggregate_logging_outputs(
-            logging_outputs, self.criterion
-        )
-        sample_size = self.task.grad_denom(sample_sizes, self.criterion)
+        if not self.fast_stat_sync:
+            # aggregate logging outputs and sample sizes
+            logging_output = self.task.aggregate_logging_outputs(
+                logging_outputs, self.get_criterion()
+            )
+            sample_size = self.task.grad_denom(sample_sizes, self.get_criterion())
 
         if not all(k in logging_output for k in ['ntokens', 'nsentences']):
             raise Exception((
@@ -280,7 +394,8 @@ class Trainer(object):
 
         try:
             # normalize grads by sample size
-            self.optimizer.multiply_grads(self.args.distributed_world_size / float(sample_size))
+            if sample_size > 0:
+                self.optimizer.multiply_grads(self.args.distributed_world_size / float(sample_size))
 
             # clip grads
             grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
@@ -288,10 +403,7 @@ class Trainer(object):
 
             # take an optimization step
             self.optimizer.step()
-            self._num_updates += 1
-
-            # update learning rate
-            self.lr_scheduler.step_update(self._num_updates)
+            self.set_num_updates(self.get_num_updates() + 1)
 
             # task specific update per step
             self.task.update_step(self._num_updates)
@@ -323,6 +435,7 @@ class Trainer(object):
             self.meters['loss_scale'].reset()
             self.meters['loss_scale'].update(self.optimizer.scaler.loss_scale)
 
+        self.clear_buffered_stats()
         self.meters['train_wall'].stop()
 
         return logging_output
@@ -372,10 +485,10 @@ class Trainer(object):
 
         # aggregate logging outputs and sample sizes
         logging_output = self.task.aggregate_logging_outputs(
-            logging_output, self.criterion
+            logging_output, self.get_criterion()
         )
         sample_size = self.task.grad_denom(
-            sample_size, self.criterion
+            sample_size, self.get_criterion()
         )
 
         # update meters for validation
@@ -407,13 +520,18 @@ class Trainer(object):
     def zero_grad(self):
         self.optimizer.zero_grad()
 
+    def clear_buffered_stats(self):
+        self._all_reduce_list = [0.0] * 6
+
     def lr_step(self, epoch, val_loss=None):
         """Adjust the learning rate based on the validation loss."""
-        return self.lr_scheduler.step(epoch, val_loss)
+        self.lr_scheduler.step(epoch, val_loss)
+        # prefer updating the LR based on the number of steps
+        return self.lr_step_update()
 
-    def lr_step_update(self, num_updates):
+    def lr_step_update(self):
         """Update the learning rate after each update."""
-        return self.lr_scheduler.step_update(num_updates)
+        return self.lr_scheduler.step_update(self.get_num_updates())
 
     def get_lr(self):
         """Get the current learning rate."""
@@ -422,6 +540,10 @@ class Trainer(object):
     def get_model(self):
         """Get the (non-wrapped) model instance."""
         return self._model
+
+    def get_criterion(self):
+        """Get the (non-wrapped) criterion instance."""
+        return self._criterion
 
     def get_meter(self, name):
         """Get a specific meter by name."""
@@ -433,11 +555,26 @@ class Trainer(object):
         """Get the number of parameters updates."""
         return self._num_updates
 
+    def set_num_updates(self, num_updates):
+        """Set the number of parameters updates."""
+        self._num_updates = num_updates
+        self.lr_step_update()
+
     def _prepare_sample(self, sample):
         if sample is None or len(sample) == 0:
             return None
+
         if self.cuda:
             sample = utils.move_to_cuda(sample)
+
+        def apply_half(t):
+            if t.dtype is torch.float32:
+                return t.half()
+            return t
+
+        if self.args.fp16:
+            sample = utils.apply_to_sample(apply_half, sample)
+
         return sample
 
     def _set_seed(self):
@@ -447,3 +584,15 @@ class Trainer(object):
         torch.manual_seed(seed)
         if self.cuda:
             torch.cuda.manual_seed(seed)
+
+    def _sync_stats(self):
+        return (
+            self.args.distributed_world_size > 1 and
+            (
+                (not self.args.use_bmuf) or
+                (
+                    self.args.use_bmuf
+                    and (self.get_num_updates() + 1) % self.args.global_sync_iter == 0
+                )
+            )
+        )

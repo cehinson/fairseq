@@ -1,22 +1,20 @@
 #!/usr/bin/env python3 -u
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 """
 Translate raw text with a trained model. Batches data on-the-fly.
 """
 
 from collections import namedtuple
 import fileinput
-import sys
 
 import torch
 
 from fairseq import checkpoint_utils, options, tasks, utils
-from fairseq.sequence_generator import SequenceGenerator
+from fairseq.data import encoders
+
 
 Batch = namedtuple('Batch', 'ids src_tokens src_lengths')
 Translation = namedtuple('Translation', 'src_str hypos pos_scores alignments')
@@ -35,9 +33,11 @@ def buffered_read(input, buffer_size):
         yield buffer
 
 
-def make_batches(lines, args, task, max_positions):
+def make_batches(lines, args, task, max_positions, encode_fn):
     tokens = [
-        task.source_dictionary.encode_line(src_str, add_if_not_exist=False).long()
+        task.source_dictionary.encode_line(
+            encode_fn(src_str), add_if_not_exist=False
+        ).long()
         for src_str in lines
     ]
     lengths = torch.LongTensor([t.numel() for t in tokens])
@@ -100,6 +100,24 @@ def main(args):
     # Initialize generator
     generator = task.build_generator(args)
 
+    # Handle tokenization and BPE
+    tokenizer = encoders.build_tokenizer(args)
+    bpe = encoders.build_bpe(args)
+
+    def encode_fn(x):
+        if tokenizer is not None:
+            x = tokenizer.encode(x)
+        if bpe is not None:
+            x = bpe.encode(x)
+        return x
+
+    def decode_fn(x):
+        if bpe is not None:
+            x = bpe.decode(x)
+        if tokenizer is not None:
+            x = tokenizer.decode(x)
+        return x
+
     # Load alignment dictionary for unknown word replacement
     # (None if no unknown word replacement, empty if no path to align dictionary)
     align_dict = utils.load_align_dict(args.replace_unk)
@@ -115,7 +133,7 @@ def main(args):
     start_id = 0
     for inputs in buffered_read(args.input, args.buffer_size):
         results = []
-        for batch in make_batches(inputs, args, task, max_positions):
+        for batch in make_batches(inputs, args, task, max_positions, encode_fn):
             src_tokens = batch.src_tokens
             src_lengths = batch.src_lengths
             if use_cuda:
@@ -149,6 +167,7 @@ def main(args):
                     tgt_dict=tgt_dict,
                     remove_bpe=args.remove_bpe,
                 )
+                hypo_str = decode_fn(hypo_str)
                 print('H-{}\t{}\t{}'.format(id, hypo['score'], hypo_str))
                 print('P-{}\t{}'.format(
                     id,

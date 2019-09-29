@@ -1,9 +1,7 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import torch.nn as nn
 
@@ -15,7 +13,7 @@ class FairseqEncoder(nn.Module):
         super().__init__()
         self.dictionary = dictionary
 
-    def forward(self, src_tokens, src_lengths):
+    def forward(self, src_tokens, src_lengths=None, **kwargs):
         """
         Args:
             src_tokens (LongTensor): tokens in the source language of shape

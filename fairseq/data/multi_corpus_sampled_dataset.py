@@ -1,9 +1,7 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 from collections import OrderedDict
 from typing import Callable, Dict, List
@@ -28,24 +26,19 @@ class MultiCorpusSampledDataset(FairseqDataset):
         datasets: an OrderedDict of FairseqDataset instances.
         sampling_func: A function for sampling over list of dataset keys.
                 Default strategy is to sample uniformly.
-        default_key: string which specifies the default key to be used for
-            generating dummy batches etc.
     """
 
     def __init__(
         self,
         datasets: Dict[str, FairseqDataset],
         sampling_func: Callable[[List], int] = None,
-        default_key: str = "",
     ):
         super().__init__()
         assert isinstance(datasets, OrderedDict)
-        assert default_key in datasets
         self.datasets = datasets
         if sampling_func is None:
             sampling_func = uniform_sampler
         self.sampling_func = sampling_func
-        self.default_key = default_key
 
         self.total_num_instances = 0
         for _, dataset in datasets.items():

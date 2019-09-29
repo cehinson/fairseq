@@ -1,24 +1,25 @@
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the license found in the LICENSE file in
-# the root directory of this source tree. An additional grant of patent rights
-# can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from fairseq import options, utils
-from fairseq.modules import AdaptiveSoftmax
-from . import (
-    FairseqEncoder, FairseqIncrementalDecoder, FairseqModel, register_model,
+from fairseq.models import (
+    FairseqEncoder,
+    FairseqIncrementalDecoder,
+    FairseqEncoderDecoderModel,
+    register_model,
     register_model_architecture,
 )
+from fairseq.modules import AdaptiveSoftmax
 
 
 @register_model('lstm')
-class LSTMModel(FairseqModel):
+class LSTMModel(FairseqEncoderDecoderModel):
     def __init__(self, encoder, decoder):
         super().__init__(encoder, decoder)
 
@@ -206,6 +207,7 @@ class LSTMEncoder(FairseqEncoder):
 
     def forward(self, src_tokens, src_lengths):
         if self.left_pad:
+            # nn.utils.rnn.pack_padded_sequence requires right-padding;
             # convert left-padding to right-padding
             src_tokens = utils.convert_padding_direction(
                 src_tokens,
@@ -279,9 +281,9 @@ class AttentionLayer(nn.Module):
 
     def forward(self, input, source_hids, encoder_padding_mask):
         # input: bsz x input_embed_dim
-        # source_hids: srclen x bsz x output_embed_dim
+        # source_hids: srclen x bsz x source_embed_dim
 
-        # x: bsz x output_embed_dim
+        # x: bsz x source_embed_dim
         x = self.input_proj(input)
 
         # compute attention
@@ -299,7 +301,7 @@ class AttentionLayer(nn.Module):
         # sum weighted sources
         x = (attn_scores.unsqueeze(2) * source_hids).sum(dim=0)
 
-        x = F.tanh(self.output_proj(torch.cat((x, input), dim=1)))
+        x = torch.tanh(self.output_proj(torch.cat((x, input), dim=1)))
         return x, attn_scores
 
 
@@ -348,14 +350,14 @@ class LSTMDecoder(FairseqIncrementalDecoder):
             self.additional_fc = Linear(hidden_size, out_embed_dim)
         if adaptive_softmax_cutoff is not None:
             # setting adaptive_softmax dropout to dropout_out for now but can be redefined
-            self.adaptive_softmax = AdaptiveSoftmax(num_embeddings, embed_dim, adaptive_softmax_cutoff,
+            self.adaptive_softmax = AdaptiveSoftmax(num_embeddings, hidden_size, adaptive_softmax_cutoff,
                                                     dropout=dropout_out)
         elif not self.share_input_output_embed:
             self.fc_out = Linear(out_embed_dim, num_embeddings, dropout=dropout_out)
 
-    def forward(self, prev_output_tokens, encoder_out_dict, incremental_state=None):
-        encoder_out = encoder_out_dict['encoder_out']
-        encoder_padding_mask = encoder_out_dict['encoder_padding_mask']
+    def forward(self, prev_output_tokens, encoder_out, incremental_state=None):
+        encoder_padding_mask = encoder_out['encoder_padding_mask']
+        encoder_out = encoder_out['encoder_out']
 
         if incremental_state is not None:
             prev_output_tokens = prev_output_tokens[:, -1:]
